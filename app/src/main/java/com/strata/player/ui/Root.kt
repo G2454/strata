@@ -82,14 +82,7 @@ fun StrataRoot(model: AppModel, onRequestPermission: () -> Unit) {
                             Tab.SEARCH -> SearchScreen(model)
                             Tab.SOUND -> SoundScreen(model)
                         }
-                        val top = model.details.lastOrNull()
-                        AnimatedVisibility(
-                            visible = top != null,
-                            enter = slideInHorizontally { it / 3 } + fadeIn(),
-                            exit = slideOutHorizontally { it / 3 } + fadeOut(),
-                        ) {
-                            if (top != null) androidx.compose.runtime.key(top) { DetailScreen(model, top) }
-                        }
+                        DetailOverlay(model)
                     }
                     if (cur != null) MiniPlayer(model)
                     BottomNav(model)
@@ -114,6 +107,24 @@ fun StrataRoot(model: AppModel, onRequestPermission: () -> Unit) {
             }
             SheetHost(model)
             ToastHost(model)
+        }
+    }
+}
+
+/** Album / artist / playlist pages slide over the current tab. Kept outside any Column/Row scope on purpose. */
+@Composable
+private fun DetailOverlay(model: AppModel) {
+    val top = model.details.lastOrNull()
+    var last by remember { mutableStateOf<com.strata.player.Detail?>(null) }
+    if (top != null) last = top
+    AnimatedVisibility(
+        visible = top != null,
+        enter = slideInHorizontally { it / 3 } + fadeIn(),
+        exit = slideOutHorizontally { it / 3 } + fadeOut(),
+    ) {
+        val d = last
+        if (d != null) {
+            androidx.compose.runtime.key(d) { DetailScreen(model, d) }
         }
     }
 }
