@@ -1,4 +1,6 @@
-# Strata — music player for Android
+# Strata — Music Player for Android
+
+# AI slop. DO NOT CONSIDER THIS MY PROJECT. Public repository used for GitHub Actions.
 
 A fast, local music player that pairs foobar2000's power features with Samsung Music's touch-friendly layout.
 Native Kotlin + Jetpack Compose, playback on Media3/ExoPlayer, with Strata's own 32-bit float DSP chain.
