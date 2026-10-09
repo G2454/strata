@@ -1,3 +1,5 @@
+import java.time.Duration
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -89,7 +91,7 @@ tasks.withType<Test>().configureEach {
     // (threads, loopers, snapshot observers) that can leak from one class into the next.
     forkEvery = 1
     // Never let a stuck test eat the whole CI job.
-    timeout.set(java.time.Duration.ofMinutes(25))
+    timeout.set(Duration.ofMinutes(25))
     testLogging {
         events("passed", "failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
