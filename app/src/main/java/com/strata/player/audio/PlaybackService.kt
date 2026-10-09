@@ -1,7 +1,10 @@
+@file:androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
+
 package com.strata.player.audio
 
 import android.app.PendingIntent
 import android.content.Intent
+import androidx.media3.common.Player
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
 import com.strata.player.MainActivity
@@ -22,6 +25,19 @@ class PlaybackService : MediaSessionService() {
         )
         session = MediaSession.Builder(this, app.model.engine.player)
             .setSessionActivity(open)
+            .setCallback(object : MediaSession.Callback {
+                // Controllers (notification, lock screen, Bluetooth, the app itself) only see the current
+                // item, not the whole playlist. Shipping a several-thousand-item timeline to every controller
+                // on each change is what makes big libraries feel slow.
+                override fun onConnect(session: MediaSession, controller: MediaSession.ControllerInfo): MediaSession.ConnectionResult {
+                    val commands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
+                        .remove(Player.COMMAND_GET_TIMELINE)
+                        .build()
+                    return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
+                        .setAvailablePlayerCommands(commands)
+                        .build()
+                }
+            })
             .build()
     }
 

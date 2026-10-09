@@ -87,6 +87,7 @@ class AppModel(private val app: Application) {
     var settings by mutableStateOf(store.loadSettings()); private set
     var tech by mutableStateOf(store.loadTech()); private set
     val accents = mutableStateMapOf<Long, Pair<Color, Color>>()
+    private val accentRequested = HashSet<Long>()
 
     private var rawTracks: List<Track> = emptyList()
     private var restored = false
@@ -133,7 +134,7 @@ class AppModel(private val app: Application) {
                 try { MediaScanner.scan(app, settings.ignoreShort) } catch (e: Exception) { emptyList() }
             }
             rawTracks = ts
-            rebuildIndex()
+            rebuildIndexNow()
             loading = false
             if (!restored) restoreSession()
             scanTech()
@@ -143,9 +144,19 @@ class AppModel(private val app: Application) {
 
     private fun signed(n: Int) = if (n > 0) "+$n" else "$n"
 
-    private fun rebuildIndex() {
+    /** Builds the library index (grouping and sorting thousands of tracks) off the main thread. */
+    private suspend fun rebuildIndexNow() {
         val ov = user.overrides
-        index = LibraryIndex(if (ov.isEmpty()) rawTracks else rawTracks.map { t ->
+        val raw = rawTracks
+        index = withContext(Dispatchers.Default) { LibraryIndex(applyOverrides(raw, ov)) }
+    }
+
+    private fun rebuildIndex() {
+        scope.launch { rebuildIndexNow() }
+    }
+
+    private fun applyOverrides(raw: List<Track>, ov: Map<Long, Map<String, String>>): List<Track> =
+        if (ov.isEmpty()) raw else raw.map { t ->
             val o = ov[t.id] ?: return@map t
             t.copy(
                 title = o["title"] ?: t.title,
@@ -158,8 +169,7 @@ class AppModel(private val app: Application) {
                 trackNo = o["trackNo"]?.toIntOrNull() ?: t.trackNo,
                 discNo = o["discNo"]?.toIntOrNull() ?: t.discNo,
             )
-        })
-    }
+        }
 
     private fun restoreSession() {
         restored = true
@@ -170,18 +180,24 @@ class AppModel(private val app: Application) {
         }
     }
 
+    /**
+     * Reads sample rate / bit depth for the format badges in the background.
+     * Header-only reads on a low-priority thread; progress is saved as it goes, so a scan
+     * interrupted by closing the app resumes where it stopped instead of starting over.
+     */
     private fun scanTech() {
         techJob?.cancel()
-        techJob = scope.launch(Dispatchers.IO) {
+        val tracks = index.tracks
+        techJob = scope.launch(com.strata.player.data.Background.scan) {
             val known = HashMap(tech)
             var dirty = 0
-            for (t in index.tracks) {
+            for (t in tracks) {
                 if (known.containsKey(t.id)) continue
-                val info = tags.read(t).tech ?: Tech(0, if (t.lossless) 16 else 0, 2)
-                known[t.id] = info
-                if (++dirty % 40 == 0) {
+                known[t.id] = tags.readTech(t) ?: Tech(0, if (t.lossless) 16 else 0, 2)
+                if (++dirty % 300 == 0) {
                     val snap = HashMap(known)
                     withContext(Dispatchers.Main) { tech = snap }
+                    store.saveTech(snap)
                 }
             }
             if (dirty > 0) {
@@ -190,6 +206,15 @@ class AppModel(private val app: Application) {
                 store.saveTech(snap)
             }
         }
+    }
+
+    /** Test hook: installs a fixed library without touching MediaStore. */
+    @androidx.annotation.VisibleForTesting
+    fun installLibraryForTest(tracks: List<Track>) {
+        restored = true
+        rawTracks = tracks
+        index = LibraryIndex(tracks)
+        hasPermission = true
     }
 
     fun track(id: Long): Track? = index.byId[id]
@@ -351,22 +376,22 @@ class AppModel(private val app: Application) {
         if (t == null) return null
         accents[t.albumId]?.let { return it }
         val key = t.albumId
-        accents[key] = fallbackAccent(key)
-        scope.launch(Dispatchers.IO) {
+        // Called from composition: never write state here, just start one background lookup per album.
+        if (!accentRequested.add(key)) return fallbackAccent(key)
+        scope.launch(com.strata.player.data.Background.art) {
             val bmp: Bitmap? = try {
                 if (Build.VERSION.SDK_INT >= 29) app.contentResolver.loadThumbnail(t.uri, Size(160, 160), null)
                 else app.contentResolver.openInputStream(albumArtUri(t.albumId))?.use { BitmapFactory.decodeStream(it) }
             } catch (e: Exception) { null }
+            var pair = fallbackAccent(key)
             if (bmp != null) {
                 val p = Palette.from(bmp).maximumColorCount(16).generate()
                 val sw = p.vibrantSwatch ?: p.lightVibrantSwatch ?: p.mutedSwatch ?: p.dominantSwatch
-                if (sw != null) {
-                    val pair = derive(sw.rgb)
-                    withContext(Dispatchers.Main) { accents[key] = pair }
-                }
+                if (sw != null) pair = derive(sw.rgb)
             }
+            withContext(Dispatchers.Main) { accents[key] = pair }
         }
-        return accents[key]
+        return fallbackAccent(key)
     }
 
     private fun derive(rgb: Int): Pair<Color, Color> {

@@ -29,6 +29,7 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
@@ -82,7 +83,7 @@ fun PropertiesScreen(model: AppModel, id: Long) {
         }
     }
 
-    Column(Modifier.fillMaxSize().background(t.bg).blockTouches().statusBarsPadding().navigationBarsPadding().imePadding()) {
+    Column(Modifier.fillMaxSize().testTag("properties").background(t.bg).blockTouches().statusBarsPadding().navigationBarsPadding().imePadding()) {
         OverlayHeader("Properties", { model.propsId = null }) {
             if (model.propsTab == 0 && changed) {
                 Text(
@@ -201,7 +202,7 @@ private fun InfoCard(rows: List<Pair<String, String>>) {
 fun SettingsScreen(model: AppModel) {
     val t = LocalTokens.current
     val s = model.settings
-    Column(Modifier.fillMaxSize().background(t.bg).blockTouches().statusBarsPadding().navigationBarsPadding()) {
+    Column(Modifier.fillMaxSize().testTag("settings").background(t.bg).blockTouches().statusBarsPadding().navigationBarsPadding()) {
         OverlayHeader("Settings", { model.settingsOpen = false })
         Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(bottom = 24.dp)) {
             SectionLabel("Appearance")

@@ -38,6 +38,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -62,9 +63,10 @@ fun StrataRoot(model: AppModel, onRequestPermission: () -> Unit) {
     }
     val cur = model.track(model.engine.currentId)
     val pair = if (s.colorFromArt) model.accentFor(cur) else null
-    val light by animateColorAsState(pair?.first ?: Color(0xFF7FD1FF), tween(600), label = "accL")
-    val deep by animateColorAsState(pair?.second ?: Color(0xFF0A6593), tween(600), label = "accD")
-    val t = tokens(dark, light, deep)
+    // The accent switches instantly: animating it would recompose every screen on every frame.
+    val light = pair?.first ?: Color(0xFF7FD1FF)
+    val deep = pair?.second ?: Color(0xFF0A6593)
+    val t = remember(dark, light, deep) { tokens(dark, light, deep) }
 
     StrataTheme(t) {
         BackHandler(enabled = model.sheet != null || model.propsId != null || model.settingsOpen || model.nowOpen || model.details.isNotEmpty() || model.tab != Tab.LIBRARY) {
@@ -163,7 +165,7 @@ private fun MiniPlayer(model: AppModel) {
         }
     }
     val prog = if (cur.durationMs > 0) (pos.toFloat() / cur.durationMs).coerceIn(0f, 1f) else 0f
-    Box(Modifier.fillMaxWidth().background(t.bg).padding(start = 10.dp, end = 10.dp, top = 6.dp)) {
+    Box(Modifier.fillMaxWidth().testTag("miniplayer").background(t.bg).padding(start = 10.dp, end = 10.dp, top = 6.dp)) {
         Box(
             Modifier
                 .fillMaxWidth()
@@ -184,7 +186,7 @@ private fun MiniPlayer(model: AppModel) {
                         Text(cur.artist, style = Type.body(12), color = t.sub, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
-                IconBtn(if (e.isPlaying) Ic.pause else Ic.play, if (e.isPlaying) "Pause" else "Play", e::togglePlay, iconSize = 24.dp)
+                IconBtn(if (e.playIntent) Ic.pause else Ic.play, if (e.playIntent) "Pause" else "Play", e::togglePlay, iconSize = 24.dp)
                 IconBtn(Ic.next, "Next track", e::next)
             }
             Box(
@@ -212,7 +214,7 @@ private fun androidx.compose.foundation.layout.RowScope.NavItem(icon: ImageVecto
     val t = LocalTokens.current
     val bg by animateColorAsState(if (on) t.soft else Color.Transparent, label = "nav")
     Column(
-        Modifier.weight(1f).fillMaxSize().clickable(role = Role.Tab, onClick = onClick),
+        Modifier.weight(1f).fillMaxSize().testTag("nav-" + label.lowercase()).clickable(role = Role.Tab, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {

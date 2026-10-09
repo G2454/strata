@@ -25,6 +25,17 @@ class TagReader(private val context: Context) {
         return info
     }
 
+    /** Stream info only (sample rate / bits / channels). Cheap: reads a file header, never the whole tag. */
+    fun readTech(track: Track): Tech? {
+        cache[track.id]?.tech?.let { return it }
+        val fromHeader = try {
+            context.contentResolver.openInputStream(track.uri)?.use { TagParser.parse(it, techOnly = true).tech }
+        } catch (e: Exception) {
+            null
+        }
+        return fromHeader ?: extractorTech(track)
+    }
+
     /** Lyrics: embedded first, then a sidecar .lrc next to the file (readable on most devices). */
     fun lyrics(track: Track): List<LyricLine>? {
         val embedded = read(track).lyrics

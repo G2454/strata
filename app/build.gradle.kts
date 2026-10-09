@@ -35,6 +35,12 @@ android {
     buildFeatures {
         compose = true
     }
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+            isReturnDefaultValues = true
+        }
+    }
     lint {
         abortOnError = false
         checkReleaseBuilds = false
@@ -65,4 +71,45 @@ dependencies {
     implementation("io.coil-kt:coil-compose:2.7.0")
     implementation("androidx.palette:palette-ktx:1.0.0")
     implementation("com.google.guava:guava:33.3.1-android")
+
+    // Tests: JVM logic tests + Compose UI tests on Robolectric (real Android framework, no emulator needed).
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation(composeBom)
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
+}
+
+tasks.withType<Test>().configureEach {
+    maxHeapSize = "2g"
+    testLogging {
+        events("passed", "failed")
+        exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
+    }
+    // Print results as GitHub Actions annotations so they show on the run page without opening logs.
+    addTestListener(object : TestListener {
+        override fun beforeSuite(suite: TestDescriptor) {}
+        override fun beforeTest(testDescriptor: TestDescriptor) {}
+        override fun afterTest(desc: TestDescriptor, result: TestResult) {
+            if (result.resultType != TestResult.ResultType.FAILURE) return
+            val e = result.exception
+            val where = e?.stackTrace?.firstOrNull { it.className.startsWith("com.strata") }
+                ?.let { " @ ${it.fileName}:${it.lineNumber}" } ?: ""
+            val msg = ((e?.javaClass?.simpleName ?: "Failure") + ": " + (e?.message ?: "") + where)
+                .replace("\r", " ").replace("\n", " | ").take(1500)
+            println("::error title=${desc.className?.substringAfterLast('.')}.${desc.name}::$msg")
+        }
+        override fun afterSuite(suite: TestDescriptor, result: TestResult) {
+            if (suite.parent == null) {
+                println("::notice title=Strata tests::${result.resultType} - ${result.testCount} tests, ${result.successfulTestCount} passed, ${result.failedTestCount} failed")
+            }
+        }
+    })
+}
+
+// Every APK build runs the full test suite first, so a broken button can't ship.
+tasks.matching { it.name == "assembleRelease" }.configureEach {
+    dependsOn("testDebugUnitTest")
 }

@@ -6,7 +6,7 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
@@ -103,11 +104,12 @@ fun NowPlayingScreen(model: AppModel) {
     Column(
         Modifier
             .fillMaxSize()
+            .testTag("nowplaying")
+            .blockTouches()
             .background(t.bg)
             .background(Brush.verticalGradient(0f to glow, 0.58f to t.bg))
             .statusBarsPadding()
             .navigationBarsPadding()
-            .blockTouches()
     ) {
         // Top bar
         Row(Modifier.fillMaxWidth().height(56.dp).padding(horizontal = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -193,10 +195,10 @@ fun NowPlayingScreen(model: AppModel) {
             IconBtn(Ic.prev, "Previous track", e::previous, size = 60.dp, iconSize = 30.dp)
             Box(
                 Modifier.size(78.dp).shadow(16.dp, CircleShape, ambientColor = t.accentRaw, spotColor = t.accentRaw).clip(CircleShape).background(t.accentFill)
-                    .clickable(onClickLabel = if (e.isPlaying) "Pause" else "Play") { e.togglePlay() },
+                    .clickable(onClickLabel = if (e.playIntent) "Pause" else "Play") { e.togglePlay() },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(if (e.isPlaying) Ic.pause else Ic.play, if (e.isPlaying) "Pause" else "Play", tint = t.onAccent, modifier = Modifier.size(32.dp))
+                Icon(if (e.playIntent) Ic.pause else Ic.play, if (e.playIntent) "Pause" else "Play", tint = t.onAccent, modifier = Modifier.size(32.dp))
             }
             IconBtn(Ic.next, "Next track", e::next, size = 60.dp, iconSize = 30.dp)
             ModeButton(Ic.repeat, "Repeat: ${model.settings.order.label}", repeatOn, if (model.settings.order == Order.REPEAT_TRACK) "1" else null) {
@@ -285,7 +287,7 @@ private fun SeekBar(model: AppModel, cur: Track) {
                     detectTapGestures { o -> e.seekTo((((o.x - 10.dp.toPx()) / (size.width - 20.dp.toPx())).coerceIn(0f, 1f) * curDur).toLong()) }
                 }
                 .pointerInput(cur.id) {
-                    detectDragGestures(
+                    detectHorizontalDragGestures(
                         onDragStart = { o -> dragFrac = ((o.x - 10.dp.toPx()) / (size.width - 20.dp.toPx())).coerceIn(0f, 1f) },
                         onDragEnd = { dragFrac?.let { e.seekTo((it * curDur).toLong()) }; dragFrac = null },
                         onDragCancel = { dragFrac = null },

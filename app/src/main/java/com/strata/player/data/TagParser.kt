@@ -14,14 +14,19 @@ object TagParser {
 
     private const val MAX_TEXT_BLOCK = 2 * 1024 * 1024
 
-    fun parse(input: InputStream): TagInfo {
-        val d = DataInputStream(input.buffered(64 * 1024))
+    /**
+     * Full parse: stream info, ReplayGain, lyrics. Embedded pictures are skipped, never loaded.
+     * With [techOnly] it stops as soon as the stream info is known (a few hundred bytes for FLAC,
+     * one header skip for MP3), which is what the background library scan uses.
+     */
+    fun parse(input: InputStream, techOnly: Boolean = false): TagInfo {
+        val d = DataInputStream(input.buffered(16 * 1024))
         val magic = ByteArray(4)
         return try {
             d.readFully(magic)
             when {
-                magic[0] == 'f'.code.toByte() && magic[1] == 'L'.code.toByte() && magic[2] == 'a'.code.toByte() && magic[3] == 'C'.code.toByte() -> parseFlac(d)
-                magic[0] == 'I'.code.toByte() && magic[1] == 'D'.code.toByte() && magic[2] == '3'.code.toByte() -> parseId3(d, magic[3].toInt() and 0xFF)
+                magic[0] == 'f'.code.toByte() && magic[1] == 'L'.code.toByte() && magic[2] == 'a'.code.toByte() && magic[3] == 'C'.code.toByte() -> parseFlac(d, techOnly)
+                magic[0] == 'I'.code.toByte() && magic[1] == 'D'.code.toByte() && magic[2] == '3'.code.toByte() -> parseId3(d, magic[3].toInt() and 0xFF, techOnly)
                 (magic[0].toInt() and 0xFF) == 0xFF && (magic[1].toInt() and 0xE0) == 0xE0 -> TagInfo(tech = mpegTech(magic, 0), tagType = "None")
                 else -> TagInfo(tech = null)
             }
@@ -32,7 +37,7 @@ object TagParser {
 
     // ---------------------------------------------------------------- FLAC
 
-    private fun parseFlac(d: DataInputStream): TagInfo {
+    private fun parseFlac(d: DataInputStream, techOnly: Boolean): TagInfo {
         var tech: Tech? = null
         var total = 0L
         var picture = false
@@ -52,6 +57,7 @@ object TagParser {
                     total = ((b.u(13) and 0xF).toLong() shl 32) or (b.u(14).toLong() shl 24) or
                         (b.u(15).toLong() shl 16) or (b.u(16).toLong() shl 8) or b.u(17).toLong()
                     tech = Tech(sr, bps, ch)
+                    if (techOnly) return TagInfo(tech = tech, totalSamples = total, tagType = "Vorbis comments")
                 }
                 type == 4 && len <= MAX_TEXT_BLOCK -> {
                     val b = ByteArray(len)
@@ -99,7 +105,7 @@ object TagParser {
 
     // ---------------------------------------------------------------- ID3v2 / MP3
 
-    private fun parseId3(d: DataInputStream, version: Int): TagInfo {
+    private fun parseId3(d: DataInputStream, version: Int, techOnly: Boolean): TagInfo {
         d.readUnsignedByte() // revision
         val flags = d.readUnsignedByte()
         val sizeBytes = ByteArray(4)
@@ -108,46 +114,56 @@ object TagParser {
         val comments = HashMap<String, String>()
         var picture = false
         var lyrics: String? = null
-        if (version != 3 && version != 4 || size > 64 * 1024 * 1024) {
+        if (techOnly || (version != 3 && version != 4)) {
             skipFully(d, size.toLong())
         } else {
-            val body = ByteArray(size)
-            d.readFully(body)
-            var pos = 0
-            if ((flags and 0x40) != 0 && size >= 4) {
-                pos = if (version == 3) 4 + be32(body, 0) else syncsafe(body, 0)
+            // Stream frame by frame: text frames we care about are read, everything else
+            // (cover art can be several MB) is skipped without allocating.
+            var remaining = size
+            if ((flags and 0x40) != 0 && remaining >= 4) {
+                val ext = ByteArray(4)
+                d.readFully(ext)
+                remaining -= 4
+                val extRest = if (version == 3) be32(ext, 0) else syncsafe(ext, 0) - 4
+                if (extRest in 0..remaining) { skipFully(d, extRest.toLong()); remaining -= extRest }
             }
-            while (pos + 10 <= size) {
-                if (body[pos].toInt() == 0) break
-                val id = String(body, pos, 4, Charsets.ISO_8859_1)
-                val fsize = if (version == 4) syncsafe(body, pos + 4) else be32(body, pos + 4)
-                val fflags = (body.u(pos + 8) shl 8) or body.u(pos + 9)
-                var start = pos + 10
-                val end = start + fsize
-                if (fsize <= 0 || end > size) break
-                if (version == 4 && (fflags and 0x0001) != 0) start += 4 // data length indicator
-                when (id) {
-                    "TXXX" -> if (end - start > 1) {
+            val hdr = ByteArray(10)
+            while (remaining >= 10) {
+                d.readFully(hdr)
+                remaining -= 10
+                if (hdr[0].toInt() == 0) break
+                val id = String(hdr, 0, 4, Charsets.ISO_8859_1)
+                val fsize = if (version == 4) syncsafe(hdr, 4) else be32(hdr, 4)
+                val fflags = (hdr.u(8) shl 8) or hdr.u(9)
+                if (fsize <= 0 || fsize > remaining) break
+                if ((id == "TXXX" || id == "USLT") && fsize <= 512 * 1024) {
+                    val body = ByteArray(fsize)
+                    d.readFully(body)
+                    val start = if (version == 4 && (fflags and 0x0001) != 0) 4 else 0 // data length indicator
+                    val end = fsize
+                    if (id == "TXXX" && end - start > 1) {
                         val enc = body.u(start)
                         val descEnd = terminator(enc, body, start + 1, end)
                         val desc = decode(enc, body, start + 1, descEnd)
                         val valueStart = (descEnd + termLen(enc)).coerceAtMost(end)
                         comments[desc.uppercase()] = decode(enc, body, valueStart, end)
-                    }
-                    "USLT" -> if (end - start > 4) {
+                    } else if (id == "USLT" && end - start > 4) {
                         val enc = body.u(start)
                         val descEnd = terminator(enc, body, start + 4, end)
                         val textStart = (descEnd + termLen(enc)).coerceAtMost(end)
                         lyrics = decode(enc, body, textStart, end)
                     }
-                    "APIC" -> picture = true
+                } else {
+                    if (id == "APIC") picture = true
+                    skipFully(d, fsize.toLong())
                 }
-                pos = end
+                remaining -= fsize
             }
+            if (remaining > 0) skipFully(d, remaining.toLong())
         }
         // MPEG frame header follows the tag (allow some padding/junk).
         var tech: Tech? = null
-        val probe = ByteArray(16 * 1024)
+        val probe = ByteArray(4 * 1024)
         val n = readUpTo(d, probe)
         var i = 0
         while (i + 4 <= n) {

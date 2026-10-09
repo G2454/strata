@@ -8,7 +8,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -102,11 +102,16 @@ object Fmt {
 
 // ------------------------------------------------------------------ basic building blocks
 
-/** Consumes any touch its children didn't, so full-screen overlays don't leak taps to the screen below. */
+/**
+ * Makes a full-screen overlay the hit target so taps don't reach the screen below it.
+ * It must NOT consume events: Compose cancels a child's click when a parent consumes the
+ * pointer change (checked on the Final pass), which is what broke every overlay button before.
+ * Having a pointer-input node is enough, because hit testing stops at the topmost sibling that has one.
+ */
 fun Modifier.blockTouches(): Modifier = this.pointerInput(Unit) {
     awaitPointerEventScope {
         while (true) {
-            awaitPointerEvent().changes.forEach { it.consume() }
+            awaitPointerEvent()
         }
     }
 }
@@ -344,7 +349,7 @@ fun StrataSlider(
                 detectTapGestures { cb(valueAt(it.x, size.width.toFloat(), 10.dp.toPx())) }
             }
             .pointerInput(range, step) {
-                detectDragGestures(onDragStart = { cb(valueAt(it.x, size.width.toFloat(), 10.dp.toPx())) }) { change, _ ->
+                detectHorizontalDragGestures(onDragStart = { cb(valueAt(it.x, size.width.toFloat(), 10.dp.toPx())) }) { change, _ ->
                     change.consume()
                     cb(valueAt(change.position.x, size.width.toFloat(), 10.dp.toPx()))
                 }

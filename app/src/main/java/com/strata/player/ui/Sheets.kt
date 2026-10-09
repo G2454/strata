@@ -39,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
@@ -70,6 +71,7 @@ fun SheetHost(model: AppModel) {
             Column(
                 Modifier
                     .fillMaxWidth()
+                    .testTag("sheet")
                     .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.86f).dp)
                     .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     .background(t.sheet)
@@ -354,7 +356,7 @@ private fun SleepSheet(model: AppModel) {
     SheetTitle("Sleep timer", "Pause playback after a while")
     val opts = listOf<Pair<Int?, String>>(null to "Off", 15 to "15 minutes", 30 to "30 minutes", 45 to "45 minutes", 60 to "1 hour", 90 to "1 hour 30 minutes")
     opts.forEachIndexed { i, (min, label) ->
-        val selected = if (min == null) e.sleepAtMs == null && !e.sleepEndOfTrack else false
+        val selected = if (min == null) e.sleepAtMs == null && !e.sleepEndOfTrack else e.sleepAtMs != null && e.sleepChoice == min
         RadioRow(label, null, selected, {
             e.setSleepMinutes(min)
             model.sheet = null
@@ -393,7 +395,7 @@ private fun OrderSheet(model: AppModel) {
 @Composable
 private fun OutputSheet(model: AppModel) {
     val e = model.engine
-    val devices = e.outputDevices()
+    val devices = remember { e.outputDevices() }
     SheetTitle("Audio output", "Preferred device for Strata's playback")
     RadioRow("System default", "Follow Android's routing", e.preferredDeviceId == 0, { e.setPreferredDevice(null) }, topLine = false)
     devices.forEach { d ->

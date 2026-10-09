@@ -57,11 +57,14 @@ class Engine(
 
     var currentId by mutableLongStateOf(-1L); private set
     var isPlaying by mutableStateOf(false); private set
+    /** True while the user wants playback (also during buffering), so play/pause buttons reflect intent. */
+    var playIntent by mutableStateOf(false); private set
     var ctxName by mutableStateOf("All tracks"); private set
     var order by mutableStateOf(Order.DEFAULT); private set
     var timelineVersion by mutableIntStateOf(0); private set
     var sleepAtMs by mutableStateOf<Long?>(null); private set
     var sleepEndOfTrack by mutableStateOf(false); private set
+    var sleepChoice by mutableStateOf<Int?>(null); private set
     var currentTags by mutableStateOf<TagInfo?>(null); private set
     var appliedGainDb by mutableStateOf<Float?>(null); private set
     var preferredDeviceId by mutableIntStateOf(0); private set
@@ -124,6 +127,14 @@ class Engine(
 
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
                 bump()
+            }
+
+            override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                refreshIntent()
+            }
+
+            override fun onPlaybackStateChanged(playbackState: Int) {
+                refreshIntent()
             }
         })
     }
@@ -199,8 +210,9 @@ class Engine(
             val info = tags.read(t)
             withContext(Dispatchers.Main) {
                 if (currentId == want) { currentTags = info; pushDsp() }
+                // ExoPlayer must only be touched on the main thread.
+                prefetchNext()
             }
-            prefetchNext()
         }
     }
 
@@ -341,10 +353,20 @@ class Engine(
 
     // ------------------------------------------------------------------ transport
 
+    private fun refreshIntent() {
+        val st = player.playbackState
+        playIntent = player.playWhenReady && st != Player.STATE_IDLE && st != Player.STATE_ENDED
+    }
+
     fun togglePlay() {
-        if (player.playbackState == Player.STATE_ENDED) player.seekTo(0, 0)
-        if (player.playbackState == Player.STATE_IDLE) player.prepare()
-        if (player.isPlaying) player.pause() else player.play()
+        if (playIntent) {
+            player.pause()
+        } else {
+            if (player.playbackState == Player.STATE_ENDED) player.seekTo(0, 0)
+            if (player.playbackState == Player.STATE_IDLE) player.prepare()
+            player.play()
+        }
+        refreshIntent()
     }
 
     fun next() {
@@ -362,12 +384,14 @@ class Engine(
 
     fun setSleepMinutes(min: Int?) {
         sleepAtMs = min?.let { SystemClock.elapsedRealtime() + it * 60_000L }
+        sleepChoice = min
         if (sleepEndOfTrack) { sleepEndOfTrack = false; player.pauseAtEndOfMediaItems = false }
         startTicker()
     }
 
     fun setSleepEndOfTrack() {
         sleepAtMs = null
+        sleepChoice = null
         sleepEndOfTrack = true
         player.pauseAtEndOfMediaItems = true
     }

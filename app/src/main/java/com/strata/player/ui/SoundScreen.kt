@@ -2,7 +2,7 @@ package com.strata.player.ui
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,9 +25,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
@@ -76,7 +78,7 @@ fun SoundScreen(model: AppModel) {
             else -> false
         }
     }
-    val devices = e.outputDevices()
+    val devices = remember(e.preferredDeviceId, model.sheet) { e.outputDevices() }
     val device = devices.firstOrNull { it.id == e.preferredDeviceId }
     val outName = device?.productName?.toString()?.takeIf { it.isNotBlank() } ?: "System default"
 
@@ -113,7 +115,7 @@ fun SoundScreen(model: AppModel) {
                     Text("Equalizer", style = Type.body(17, FontWeight.SemiBold), color = t.text)
                     Text("10-band graphic · ${if (s.eqOn) s.preset else "Off"}", style = Type.mono(11), color = t.faint)
                 }
-                Box(Modifier.size(width = 64.dp, height = 44.dp).clickable { upd { it.copy(eqOn = !it.eqOn) } }, contentAlignment = Alignment.Center) {
+                Box(Modifier.size(width = 64.dp, height = 44.dp).testTag("eq-switch").clickable(onClickLabel = "Toggle equalizer") { upd { it.copy(eqOn = !it.eqOn) } }, contentAlignment = Alignment.Center) {
                     SwitchVisual(s.eqOn)
                 }
             }
@@ -283,10 +285,11 @@ private fun BandSlider(label: String, value: Float, modifier: Modifier, onChange
             Modifier
                 .fillMaxWidth()
                 .height(160.dp)
+                .testTag("band-$label")
                 .semantics { contentDescription = "$label Hz band, $value dB" }
                 .pointerInput(Unit) { detectTapGestures { cb(valueAt(it.y, size.height.toFloat(), 10.dp.toPx())) } }
                 .pointerInput(Unit) {
-                    detectDragGestures(onDragStart = { cb(valueAt(it.y, size.height.toFloat(), 10.dp.toPx())) }) { ch, _ ->
+                    detectVerticalDragGestures(onDragStart = { cb(valueAt(it.y, size.height.toFloat(), 10.dp.toPx())) }) { ch, _ ->
                         ch.consume()
                         cb(valueAt(ch.position.y, size.height.toFloat(), 10.dp.toPx()))
                     }

@@ -23,7 +23,7 @@ object Waveform {
 
     fun cached(id: Long): FloatArray? = synchronized(memory) { memory[id] }
 
-    suspend fun load(context: Context, id: Long, uri: Uri, cacheFile: File): FloatArray? = withContext(Dispatchers.Default) {
+    suspend fun load(context: Context, id: Long, uri: Uri, cacheFile: File): FloatArray? = withContext(com.strata.player.data.Background.wave) {
         cached(id)?.let { return@withContext it }
         if (cacheFile.exists()) {
             try {
