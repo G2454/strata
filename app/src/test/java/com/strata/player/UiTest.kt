@@ -150,8 +150,9 @@ class UiTest {
 
     @Test
     fun tapTrackPlaysItAndMiniPlayerWorks() {
-        tapText("Saltlight")
-        assertEquals(2L, model.engine.currentId)
+        // "Harbor Song" sits mid-list in the title-sorted library, so there is a next track to skip to.
+        tapText("Harbor Song")
+        assertEquals(3L, model.engine.currentId)
         rule.onNode(hasTestTag("miniplayer")).assertExists()
         assertTrue(model.engine.player.playWhenReady)
 

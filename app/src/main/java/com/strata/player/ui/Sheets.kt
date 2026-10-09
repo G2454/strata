@@ -73,8 +73,10 @@ fun SheetHost(model: AppModel) {
                     .fillMaxWidth()
                     .testTag("sheet")
                     .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.86f).dp)
-                    .clip(RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
-                    .background(t.sheet)
+                    // A shaped background instead of clip(): a clip with mixed corner radii makes every touch
+                    // run a Path-intersection hit test (costly, and when it misses, the tap lands on the scrim
+                    // and just closes the sheet). The scrolling content below clips itself.
+                    .background(t.sheet, RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp))
                     .blockTouches()
                     .navigationBarsPadding()
                     .imePadding(),
