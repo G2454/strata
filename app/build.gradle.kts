@@ -79,11 +79,17 @@ dependencies {
     testImplementation("androidx.test.ext:junit:1.2.1")
     testImplementation(composeBom)
     testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.test.espresso:espresso-core:3.6.1")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 tasks.withType<Test>().configureEach {
     maxHeapSize = "2g"
+    // Each test class gets a fresh JVM: Robolectric, Compose and ExoPlayer keep global state
+    // (threads, loopers, snapshot observers) that can leak from one class into the next.
+    forkEvery = 1
+    // Never let a stuck test eat the whole CI job.
+    timeout.set(java.time.Duration.ofMinutes(25))
     testLogging {
         events("passed", "failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL
@@ -98,7 +104,7 @@ tasks.withType<Test>().configureEach {
             val where = e?.stackTrace?.firstOrNull { it.className.startsWith("com.strata") }
                 ?.let { " @ ${it.fileName}:${it.lineNumber}" } ?: ""
             val msg = ((e?.javaClass?.simpleName ?: "Failure") + ": " + (e?.message ?: "") + where)
-                .replace("\r", " ").replace("\n", " | ").take(1500)
+                .replace("\r", " ").replace("\n", " | ").take(4000)
             println("::error title=${desc.className?.substringAfterLast('.')}.${desc.name}::$msg")
         }
         override fun afterSuite(suite: TestDescriptor, result: TestResult) {

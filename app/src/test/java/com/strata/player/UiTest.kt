@@ -25,13 +25,13 @@ import com.strata.player.data.RgMode
 import com.strata.player.data.SortKey
 import com.strata.player.data.ThemeMode
 import com.strata.player.data.Track
-import com.strata.player.ui.StrataRoot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -78,9 +78,11 @@ class UiTest {
         val app = ApplicationProvider.getApplicationContext<StrataApp>()
         model = app.model
         model.installLibraryForTest(library)
-        rule.setContent { StrataRoot(model) {} }
-        rule.waitForIdle()
+        rule.launchStrata(model)
     }
+
+    @After
+    fun tearDown() = model.shutdownForTest()
 
     // ------------------------------------------------------------------ helpers
 

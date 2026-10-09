@@ -18,11 +18,11 @@ import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
 import androidx.test.core.app.ApplicationProvider
 import com.strata.player.data.Track
-import com.strata.player.ui.StrataRoot
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -65,9 +65,11 @@ class ArtistsAndSelectionUiTest {
     fun setUp() {
         model = ApplicationProvider.getApplicationContext<StrataApp>().model
         model.installLibraryForTest(library)
-        rule.setContent { StrataRoot(model) {} }
-        rule.waitForIdle()
+        rule.launchStrata(model)
     }
+
+    @After
+    fun tearDown() = model.shutdownForTest()
 
     private fun inTag(tag: String) = hasAnyAncestor(hasTestTag(tag))
     private fun node(m: SemanticsMatcher): SemanticsNodeInteraction = rule.onAllNodes(m).onFirst()

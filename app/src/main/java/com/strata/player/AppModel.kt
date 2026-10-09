@@ -232,6 +232,13 @@ class AppModel(private val app: Application) {
         hasPermission = true
     }
 
+    /** Test hook: stops background work and the player so nothing leaks into the next test. */
+    @androidx.annotation.VisibleForTesting
+    fun shutdownForTest() {
+        scope.coroutineContext[Job]?.cancel()
+        try { engine.player.release() } catch (_: Throwable) { }
+    }
+
     fun track(id: Long): Track? = index.byId[id]
     fun album(id: Long): Album? = index.albumById[id]
 
