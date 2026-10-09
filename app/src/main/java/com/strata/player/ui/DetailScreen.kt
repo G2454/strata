@@ -73,6 +73,9 @@ fun DetailScreen(model: AppModel, d: Detail) {
                 if (scrolled) data.title else "", style = Type.body(15, FontWeight.SemiBold), color = t.text,
                 maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f),
             )
+            if (data.tracks.isNotEmpty()) {
+                IconBtn(Ic.select, "Select tracks", { model.beginSelecting(data.tracks.map { it.id }, data.playlistId?.takeIf { data.editable }) })
+            }
             if (data.playlistId != null && data.playlistId !in SMART_LISTS.map { it.id }) {
                 IconBtn(Ic.more, "Playlist options", { model.sheet = Sheet.PlaylistMenu(data.playlistId) })
             }
@@ -104,10 +107,17 @@ fun DetailScreen(model: AppModel, d: Detail) {
                     }
                     if (data.tracks.isNotEmpty()) {
                         val ids = data.tracks.map { it.id }
-                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
                             BigButton("Play", Ic.play, true, { model.play(ids, ids.first(), data.title) }, Modifier.weight(1f))
                             BigButton("Shuffle", Ic.shuffle, false, { model.shuffle(ids, data.title) }, Modifier.weight(1f))
+                            IconBtn(
+                                Ic.listAdd, "Add all to playlist", { model.sheet = Sheet.AddToPlaylist(ids) },
+                                size = 50.dp, background = LocalTokens.current.surface2,
+                            )
                         }
+                    }
+                    if (data.editable && data.playlistId != null) {
+                        BigButton("Add songs", Ic.plus, data.tracks.isEmpty(), { model.pickerFor = data.playlistId }, Modifier.fillMaxWidth())
                     }
                 }
             }
@@ -126,14 +136,15 @@ fun DetailScreen(model: AppModel, d: Detail) {
                 } }
             }
             if (model.settings.columns && data.tracks.isNotEmpty()) item { ColumnHeader() }
-            trackItems(model, data.tracks, data.title, data.numbered) { tr ->
+            trackItems(model, data.tracks, data.title, data.numbered, playlist = data.playlistId?.takeIf { data.editable }) { tr ->
                 model.sheet = Sheet.TrackMenu(tr.id, data.playlistId?.takeIf { data.editable })
             }
             if (data.tracks.isEmpty()) {
                 item {
                     EmptyNote(
                         if (data.query != null) "Nothing matches this query yet."
-                        else "Nothing here yet. Add tracks from any song's menu with “Add to playlist”.",
+                        else if (data.editable) "Nothing here yet. Tap “Add songs” to pick many at once, or long-press tracks anywhere to select them."
+                        else "Nothing here yet.",
                     )
                 }
             }
@@ -176,9 +187,13 @@ private fun build(model: AppModel, d: Detail): DetailData {
             )
         }
         is Detail.ArtistD -> {
-            val ts = idx.albumOrdered(idx.tracks.filter { it.artist == d.name })
-            val albums = idx.albums.filter { al -> al.trackIds.any { idx.byId[it]?.artist == d.name } }
-            DetailData("ARTIST", d.name, "${Fmt.plural(albums.size, "album")} · ${Fmt.plural(ts.size, "track")}", total(ts), ts, round = true, albums = albums)
+            // Every track the artist performs on, including features ("X feat. Artist", "Artist & Y").
+            val ts = idx.albumOrdered(idx.tracksOfArtist(d.name))
+            val albumIds = ts.map { it.albumId }.toSet()
+            val albums = idx.albums.filter { it.id in albumIds }
+            val guest = ts.count { idx.artistsOf(it).firstOrNull()?.equals(d.name, ignoreCase = true) != true }
+            val meta = total(ts) + if (guest > 0) " · featured on ${Fmt.plural(guest, "track")}" else ""
+            DetailData("ARTIST", d.name, "${Fmt.plural(albums.size, "album")} · ${Fmt.plural(ts.size, "track")}", meta, ts, round = true, albums = albums)
         }
         is Detail.GenreD -> {
             val ts = idx.albumOrdered(idx.tracks.filter { it.genre == d.name })

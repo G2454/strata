@@ -69,7 +69,7 @@ fun StrataRoot(model: AppModel, onRequestPermission: () -> Unit) {
     val t = remember(dark, light, deep) { tokens(dark, light, deep) }
 
     StrataTheme(t) {
-        BackHandler(enabled = model.sheet != null || model.propsId != null || model.settingsOpen || model.nowOpen || model.details.isNotEmpty() || model.tab != Tab.LIBRARY) {
+        BackHandler(enabled = model.sheet != null || model.pickerFor != null || model.selecting || model.propsId != null || model.settingsOpen || model.nowOpen || model.details.isNotEmpty() || model.tab != Tab.LIBRARY) {
             model.back()
         }
         Box(Modifier.fillMaxSize().background(t.bg)) {
@@ -86,8 +86,12 @@ fun StrataRoot(model: AppModel, onRequestPermission: () -> Unit) {
                         }
                         DetailOverlay(model)
                     }
-                    if (cur != null) MiniPlayer(model)
-                    BottomNav(model)
+                    if (model.selecting) {
+                        SelectionBar(model)
+                    } else {
+                        if (cur != null) MiniPlayer(model)
+                        BottomNav(model)
+                    }
                 }
             }
 
@@ -106,6 +110,12 @@ fun StrataRoot(model: AppModel, onRequestPermission: () -> Unit) {
                 var lastId by remember { mutableLongStateOf(-1L) }
                 if (pid != null) lastId = pid
                 if (lastId >= 0) PropertiesScreen(model, lastId)
+            }
+            val picker = model.pickerFor
+            AnimatedVisibility(picker != null, enter = slideInVertically { it }, exit = slideOutVertically { it }) {
+                var lastPid by remember { mutableStateOf("") }
+                if (picker != null) lastPid = picker
+                if (lastPid.isNotEmpty()) TrackPicker(model, lastPid)
             }
             SheetHost(model)
             ToastHost(model)

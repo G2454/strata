@@ -130,6 +130,7 @@ private fun TracksTab(model: AppModel) {
                     Spacer(Modifier.size(6.dp))
                     Text(s.sort.label, style = Type.body(13, FontWeight.Medium), color = t.sub)
                 }
+                IconBtn(Ic.select, "Select tracks", { model.beginSelecting(ids) }, tint = t.sub, iconSize = 20.dp)
                 IconBtn(
                     Ic.columns, "Toggle column view", { model.updateSettings { it.copy(columns = !it.columns) } },
                     tint = t.sub, iconSize = 20.dp, background = if (s.columns) t.soft else Color.Transparent,
@@ -139,11 +140,7 @@ private fun TracksTab(model: AppModel) {
         if (s.columns) item { ColumnHeader() }
         if (sorted.isEmpty()) item { LibraryEmpty(model) }
         items(sorted, key = { it.id }) { tr ->
-            TrackRow(
-                tr, Fmt.badge(tr, model.tech[tr.id]), tr.id == current, s.columns,
-                onClick = { model.play(ids, tr.id, "All tracks") },
-                onMenu = { model.sheet = com.strata.player.Sheet.TrackMenu(tr.id) },
-            )
+            SelectableTrackRow(model, tr, ids, "All tracks", s.columns)
         }
     }
 }
@@ -242,14 +239,43 @@ private fun GenreTile(name: String, ts: List<Track>, onClick: () -> Unit) {
 }
 
 /** Shared list body for any group of tracks, used by detail pages. */
-fun LazyListScope.trackItems(model: AppModel, tracks: List<Track>, ctxName: String, numbered: Boolean, onMenu: (Track) -> Unit) {
+fun LazyListScope.trackItems(
+    model: AppModel, tracks: List<Track>, ctxName: String, numbered: Boolean,
+    playlist: String? = null, onMenu: (Track) -> Unit,
+) {
     val ids = tracks.map { it.id }
     items(tracks, key = { it.id }) { tr ->
-        TrackRow(
-            tr, Fmt.badge(tr, model.tech[tr.id]), tr.id == model.engine.currentId, model.settings.columns,
-            onClick = { model.play(ids, tr.id, ctxName) },
-            onMenu = { onMenu(tr) },
+        SelectableTrackRow(
+            model, tr, ids, ctxName, model.settings.columns, playlist = playlist, onMenu = { onMenu(tr) },
             subtitle = if (numbered) "${tr.artist} · ${Fmt.time(tr.durationMs)}" else "${tr.artist} · ${tr.album}",
         )
     }
+}
+
+/**
+ * A track row wired for playback and multi-select: tap plays (or toggles while selecting),
+ * long-press starts selecting (or selects a range while selecting).
+ */
+@Composable
+fun SelectableTrackRow(
+    model: AppModel,
+    tr: Track,
+    ids: List<Long>,
+    ctxName: String,
+    columns: Boolean,
+    playlist: String? = null,
+    onMenu: () -> Unit = { model.sheet = com.strata.player.Sheet.TrackMenu(tr.id) },
+    subtitle: String = "${tr.artist} · ${tr.album}",
+    beforePlay: () -> Unit = {},
+) {
+    val selecting = model.selecting
+    TrackRow(
+        tr, Fmt.badge(tr, model.tech[tr.id]), tr.id == model.engine.currentId, columns,
+        onClick = { if (model.selecting) model.toggleSelected(ids, tr.id) else { beforePlay(); model.play(ids, tr.id, ctxName) } },
+        onMenu = onMenu,
+        subtitle = subtitle,
+        onLongClick = { model.startSelection(ids, tr.id, playlist) },
+        selecting = selecting,
+        selected = selecting && tr.id in model.selected,
+    )
 }

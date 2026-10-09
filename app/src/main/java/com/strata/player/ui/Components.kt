@@ -46,6 +46,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -380,13 +381,17 @@ fun TrackRow(
     onMenu: () -> Unit,
     subtitle: String = "${track.artist} · ${track.album}",
     number: String? = null,
+    onLongClick: () -> Unit = onMenu,
+    selecting: Boolean = false,
+    selected: Boolean = false,
 ) {
     val t = LocalTokens.current
     Row(
         Modifier
             .fillMaxWidth()
-            .background(if (current) t.soft else Color.Transparent)
-            .combinedClickable(onClick = onClick, onLongClick = onMenu)
+            .background(if (selected) t.soft else if (current && !selecting) t.soft else Color.Transparent)
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Select")
+            .semantics { if (selecting) this.selected = selected }
             .height(if (columns) 52.dp else 66.dp)
             .padding(start = 20.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -407,15 +412,33 @@ fun TrackRow(
         if (columns) {
             Text(badge, style = Type.mono(11), color = t.sub, maxLines = 1, modifier = Modifier.width(78.dp))
             Text(Fmt.time(track.durationMs), style = Type.mono(12), color = t.sub, modifier = Modifier.width(40.dp))
-        } else {
+        } else if (!selecting) {
             Text(
                 badge, style = Type.mono(10), color = t.sub, maxLines = 1,
                 modifier = Modifier.border(1.dp, t.line2, RoundedCornerShape(5.dp)).padding(horizontal = 6.dp, vertical = 3.dp),
             )
         }
-        IconBtn(Ic.more, "More options for ${track.title}", onMenu, tint = t.sub, iconSize = 20.dp)
+        if (selecting) {
+            Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { CheckDot(selected) }
+        } else {
+            IconBtn(Ic.more, "More options for ${track.title}", onMenu, tint = t.sub, iconSize = 20.dp)
+        }
     }
     if (columns) Divider()
+}
+
+/** Round check mark used by multi-select rows. */
+@Composable
+fun CheckDot(on: Boolean, enabled: Boolean = true) {
+    val t = LocalTokens.current
+    Box(
+        Modifier.size(24.dp).clip(CircleShape)
+            .background(if (on) (if (enabled) t.accentFill else t.line2) else Color.Transparent)
+            .border(2.dp, if (on) Color.Transparent else t.line2, CircleShape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (on) Icon(Ic.check, null, tint = if (enabled) t.onAccent else t.sub, modifier = Modifier.size(15.dp))
+    }
 }
 
 @Composable

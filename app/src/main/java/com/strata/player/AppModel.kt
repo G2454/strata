@@ -16,6 +16,7 @@ import androidx.palette.graphics.Palette
 import com.strata.player.audio.Engine
 import com.strata.player.data.Album
 import com.strata.player.data.LibraryIndex
+import com.strata.player.data.artistSplitter
 import com.strata.player.data.LyricLine
 import com.strata.player.data.MediaScanner
 import com.strata.player.data.Playlist
@@ -52,8 +53,9 @@ sealed class Detail {
 
 sealed class Sheet {
     data class TrackMenu(val id: Long, val fromPlaylist: String? = null) : Sheet()
-    data class AddToPlaylist(val id: Long) : Sheet()
-    data class NewPlaylist(val withTrack: Long?, val auto: Boolean) : Sheet()
+    /** Add one or many tracks (from multi-select or a whole album) to a playlist. */
+    data class AddToPlaylist(val ids: List<Long>) : Sheet()
+    data class NewPlaylist(val withTracks: List<Long>, val auto: Boolean) : Sheet()
     data class PlaylistMenu(val id: String) : Sheet()
     data object Queue : Sheet()
     data object Sleep : Sheet()
@@ -107,6 +109,18 @@ class AppModel(private val app: Application) {
     var query by mutableStateOf("")
     var toast by mutableStateOf<String?>(null); private set
 
+    /** Playlist id the "Add songs" picker is filling, or null when the picker is closed. */
+    var pickerFor by mutableStateOf<String?>(null)
+
+    // ---------------------------------------------------------------- multi-select
+    /** Selected track ids, in the order of the list they were picked from. */
+    var selected by mutableStateOf<List<Long>>(emptyList()); private set
+    var selecting by mutableStateOf(false); private set
+    /** The editable playlist the selection was made in, so "Remove" can be offered. */
+    var selectionPlaylist by mutableStateOf<String?>(null); private set
+    private var selectionScope: List<Long> = emptyList()
+    private var anchor: Long? = null
+
     init {
         engine.lookup = { index.byId[it] }
         engine.onTrackStarted = ::countPlay
@@ -148,7 +162,8 @@ class AppModel(private val app: Application) {
     private suspend fun rebuildIndexNow() {
         val ov = user.overrides
         val raw = rawTracks
-        index = withContext(Dispatchers.Default) { LibraryIndex(applyOverrides(raw, ov)) }
+        val splitter = settings.artistSplitter()
+        index = withContext(Dispatchers.Default) { LibraryIndex(applyOverrides(raw, ov), splitter) }
     }
 
     private fun rebuildIndex() {
@@ -213,7 +228,7 @@ class AppModel(private val app: Application) {
     fun installLibraryForTest(tracks: List<Track>) {
         restored = true
         rawTracks = tracks
-        index = LibraryIndex(tracks)
+        index = LibraryIndex(tracks, settings.artistSplitter())
         hasPermission = true
     }
 
@@ -233,6 +248,9 @@ class AppModel(private val app: Application) {
         store.saveSettings(settings)
         engine.applySettings(settings)
         if (old.ignoreShort != settings.ignoreShort) rescan()
+        else if (old.splitArtists != settings.splitArtists || old.keepTogether != settings.keepTogether) {
+            if (restored || rawTracks.isNotEmpty()) rebuildIndex()
+        }
     }
 
     private fun countPlay(id: Long) {
@@ -273,6 +291,7 @@ class AppModel(private val app: Application) {
         override fun plays(t: Track) = this@AppModel.plays(t)
         override fun tech(t: Track): Tech? = this@AppModel.tech[t.id]
         override fun favorite(t: Track) = isFav(t.id)
+        override fun artists(t: Track) = index.artistsOf(t)
     }
 
     fun search(q: String): List<Track> {
@@ -308,23 +327,47 @@ class AppModel(private val app: Application) {
         }
     }
 
-    fun createPlaylist(name: String, query: String?, withTrack: Long?): String {
-        val id = "p" + System.currentTimeMillis()
+    fun createPlaylist(name: String, query: String?, withTracks: List<Long> = emptyList()): String {
+        var id = "p" + System.currentTimeMillis()
+        while (user.playlists.any { it.id == id }) id += "x"
         val clean = name.trim().ifEmpty { "New playlist" }
-        updateUser { u -> u.copy(playlists = u.playlists + Playlist(id, clean, listOfNotNull(withTrack), query?.trim()?.ifEmpty { null })) }
-        flash(if (withTrack != null) "Added to “$clean”" else "Created “$clean”")
+        val ids = withTracks.distinct()
+        updateUser { u -> u.copy(playlists = u.playlists + Playlist(id, clean, ids, query?.trim()?.ifEmpty { null })) }
+        flash(
+            when {
+                ids.size == 1 -> "Added to “$clean”"
+                ids.size > 1 -> "Created “$clean” with ${ids.size} tracks"
+                else -> "Created “$clean”"
+            },
+        )
         return id
     }
 
-    fun addToPlaylist(pid: String, tid: Long) {
-        val p = user.playlists.firstOrNull { it.id == pid } ?: return
-        if (tid in p.ids) { flash("Already in “${p.name}”"); return }
-        updateUser { u -> u.copy(playlists = u.playlists.map { if (it.id == pid) it.copy(ids = it.ids + tid) else it }) }
-        flash("Added to “${p.name}”")
+    fun addToPlaylist(pid: String, tid: Long) = addToPlaylist(pid, listOf(tid))
+
+    /** Adds tracks that are not in the playlist yet, keeping their order. Returns how many were added. */
+    fun addToPlaylist(pid: String, tids: List<Long>): Int {
+        val p = user.playlists.firstOrNull { it.id == pid } ?: return 0
+        val fresh = tids.distinct().filter { it !in p.ids }
+        if (fresh.isEmpty()) {
+            flash(if (tids.size == 1) "Already in “${p.name}”" else "All already in “${p.name}”")
+            return 0
+        }
+        updateUser { u -> u.copy(playlists = u.playlists.map { if (it.id == pid) it.copy(ids = it.ids + fresh) else it }) }
+        val skipped = tids.distinct().size - fresh.size
+        flash(
+            if (fresh.size == 1 && skipped == 0) "Added to “${p.name}”"
+            else "Added ${com.strata.player.ui.Fmt.plural(fresh.size, "track")} to “${p.name}”" + if (skipped > 0) " · $skipped already there" else "",
+        )
+        return fresh.size
     }
 
-    fun removeFromPlaylist(pid: String, tid: Long) =
-        updateUser { u -> u.copy(playlists = u.playlists.map { if (it.id == pid) it.copy(ids = it.ids - tid) else it }) }
+    fun removeFromPlaylist(pid: String, tid: Long) = removeFromPlaylist(pid, listOf(tid))
+
+    fun removeFromPlaylist(pid: String, tids: Collection<Long>) {
+        val set = tids.toSet()
+        updateUser { u -> u.copy(playlists = u.playlists.map { if (it.id == pid) it.copy(ids = it.ids.filter { id -> id !in set }) else it }) }
+    }
 
     fun movePlaylistItem(pid: String, from: Int, to: Int) = updateUser { u ->
         u.copy(playlists = u.playlists.map {
@@ -419,10 +462,12 @@ class AppModel(private val app: Application) {
     }
 
     fun open(d: Detail) {
+        clearSelection()
         details.add(d)
     }
 
     fun goTo(d: Detail) {
+        clearSelection()
         sheet = null
         nowOpen = false
         if (tab == Tab.SOUND) tab = Tab.LIBRARY
@@ -430,14 +475,96 @@ class AppModel(private val app: Application) {
     }
 
     fun selectTab(t: Tab) {
+        clearSelection()
         tab = t
         details.clear()
+    }
+
+    // ---------------------------------------------------------------- multi-select actions
+
+    /** The "Select" button: enter selection mode with nothing picked yet. */
+    fun beginSelecting(scope: List<Long>, playlist: String? = null) {
+        selectionScope = scope
+        selectionPlaylist = playlist
+        selected = emptyList()
+        anchor = null
+        selecting = true
+    }
+
+    /** Long-press on a row: start selecting in the list [scope] (or extend the selection as a range). */
+    fun startSelection(scope: List<Long>, id: Long, playlist: String? = null) {
+        if (selecting && selectionScope == scope) { selectRange(scope, id); return }
+        selectionScope = scope
+        selectionPlaylist = playlist
+        selected = listOf(id)
+        anchor = id
+        selecting = true
+    }
+
+    fun toggleSelected(scope: List<Long>, id: Long) {
+        selectionScope = scope
+        val set = selected.toMutableSet()
+        if (!set.add(id)) set.remove(id)
+        selected = scope.filter { it in set } + set.filter { it !in scope }
+        anchor = id
+    }
+
+    /** Selects everything between the last touched row and [id]. */
+    fun selectRange(scope: List<Long>, id: Long) {
+        selectionScope = scope
+        val a = scope.indexOf(anchor ?: id).takeIf { it >= 0 } ?: scope.indexOf(id)
+        val b = scope.indexOf(id)
+        if (a < 0 || b < 0) { toggleSelected(scope, id); return }
+        val range = scope.subList(minOf(a, b), maxOf(a, b) + 1).toSet()
+        val set = selected.toSet() + range
+        selected = scope.filter { it in set }
+        anchor = id
+        selecting = true
+    }
+
+    fun selectAll() {
+        selected = if (selected.size == selectionScope.size) emptyList() else selectionScope
+    }
+
+    fun isSelected(id: Long) = selecting && id in selected
+
+    fun clearSelection() {
+        if (!selecting && selected.isEmpty()) return
+        selecting = false
+        selected = emptyList()
+        selectionPlaylist = null
+        anchor = null
+    }
+
+    fun playSelected() {
+        val ids = selected
+        if (ids.isEmpty()) return
+        play(ids, ids.first(), "Selection")
+        clearSelection()
+    }
+
+    fun queueSelected(next: Boolean) {
+        val ts = selected.mapNotNull { track(it) }
+        if (ts.isEmpty()) return
+        engine.enqueue(ts, next)
+        flash(if (next) "${com.strata.player.ui.Fmt.plural(ts.size, "track")} play next" else "Added ${com.strata.player.ui.Fmt.plural(ts.size, "track")} to queue")
+        clearSelection()
+    }
+
+    fun removeSelectedFromPlaylist() {
+        val pid = selectionPlaylist ?: return
+        val n = selected.size
+        removeFromPlaylist(pid, selected)
+        flash("Removed ${com.strata.player.ui.Fmt.plural(n, "track")}")
+        clearSelection()
     }
 
     /** Returns true when something was closed. */
     fun back(): Boolean {
         when {
             sheet != null -> sheet = null
+            pickerFor != null -> pickerFor = null
+            selecting -> clearSelection()
             propsId != null -> propsId = null
             settingsOpen -> settingsOpen = false
             nowOpen -> nowOpen = false

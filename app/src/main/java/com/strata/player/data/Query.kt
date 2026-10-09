@@ -22,6 +22,8 @@ class Query private constructor(private val terms: List<Term>) {
         fun plays(t: Track): Int
         fun tech(t: Track): Tech?
         fun favorite(t: Track): Boolean
+        /** Every performer of the track, including featured guests. */
+        fun artists(t: Track): List<String> = listOf(t.artist)
     }
 
     fun matches(t: Track, f: Fields): Boolean = terms.all { term ->
@@ -37,7 +39,7 @@ class Query private constructor(private val terms: List<Term>) {
         }
         val value: Any = when (field) {
             "title" -> t.title
-            "artist" -> t.artist
+            "artist" -> (listOf(t.artist) + f.artists(t)).joinToString(" ; ")
             "album" -> t.album
             "albumartist" -> t.albumArtist
             "genre" -> t.genre

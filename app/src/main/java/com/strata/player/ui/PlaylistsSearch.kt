@@ -59,7 +59,7 @@ fun PlaylistsScreen(model: AppModel) {
                 ScreenTitle("Playlists", Modifier.weight(1f))
                 Row(
                     Modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).border(1.dp, t.line2, RoundedCornerShape(20.dp))
-                        .clickable { model.sheet = Sheet.NewPlaylist(null, false) }.padding(start = 10.dp, end = 14.dp),
+                        .clickable { model.sheet = Sheet.NewPlaylist(emptyList(), false) }.padding(start = 10.dp, end = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Ic.plus, null, tint = t.text, modifier = Modifier.size(18.dp))
@@ -109,7 +109,7 @@ fun PlaylistsScreen(model: AppModel) {
         }
         item {
             Row(
-                Modifier.fillMaxWidth().height(56.dp).clickable { model.sheet = Sheet.NewPlaylist(null, true) }.padding(horizontal = 20.dp),
+                Modifier.fillMaxWidth().height(56.dp).clickable { model.sheet = Sheet.NewPlaylist(emptyList(), true) }.padding(horizontal = 20.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(Ic.plus, null, tint = t.accent, modifier = Modifier.size(18.dp))
@@ -207,7 +207,7 @@ fun SearchScreen(model: AppModel) {
                 }
             } }
         } else {
-            val artists = results.map { it.artist }.distinct()
+            val artists = results.flatMap { idx.artistsOf(it) }.distinct()
             val albums = results.map { it.albumId }.distinct()
             item { Column {
                 Text(
@@ -217,7 +217,7 @@ fun SearchScreen(model: AppModel) {
                 if (artists.isNotEmpty()) {
                     HScroll(Modifier.padding(bottom = 16.dp), gap = 14.dp) {
                         artists.take(12).forEach { a ->
-                            val sample = results.first { it.artist == a }
+                            val sample = results.first { a in idx.artistsOf(it) }
                             Column(Modifier.width(76.dp).clickable { model.open(Detail.ArtistD(a)) }, horizontalAlignment = Alignment.CenterHorizontally) {
                                 Art(sample, Modifier.size(68.dp), CircleShape)
                                 Spacer(Modifier.height(8.dp))
@@ -239,12 +239,14 @@ fun SearchScreen(model: AppModel) {
                     }
                 }
             } }
+            if (results.isNotEmpty()) item {
+                Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Tracks", style = Type.body(13, FontWeight.SemiBold), color = t.sub, modifier = Modifier.weight(1f))
+                    IconBtn(Ic.select, "Select tracks", { focus.clearFocus(); model.beginSelecting(ids) }, tint = t.sub, iconSize = 20.dp)
+                }
+            }
             items(results.take(300), key = { it.id }) { tr ->
-                TrackRow(
-                    tr, Fmt.badge(tr, model.tech[tr.id]), tr.id == model.engine.currentId, false,
-                    onClick = { focus.clearFocus(); model.play(ids, tr.id, "Search: ${q.trim()}") },
-                    onMenu = { model.sheet = Sheet.TrackMenu(tr.id) },
-                )
+                SelectableTrackRow(model, tr, ids, "Search: ${q.trim()}", false, beforePlay = { focus.clearFocus() })
             }
             if (results.isEmpty()) item { EmptyNote("Nothing matches. Try a field like artist: or a comparison like plays>10.") }
         }

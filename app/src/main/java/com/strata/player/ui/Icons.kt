@@ -72,5 +72,8 @@ object Ic {
     val eq = stroke("eq", "M5 4v6M5 14v6M12 4v2M12 10v10M19 4v9M19 17v3M3 12h4M10 8h4M17 15h4")
     val trash = stroke("trash", "M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3")
     val edit = stroke("edit", "M4 20h4L19 9l-4-4L4 16z")
+    val select = stroke("select", "M4 6.5h8M4 12h8M4 17.5h8", "M14.5 12.5l2.5 2.5 4.5-5", w = 1.9f)
+    val playNext = stroke("playNext", "M4 6h10M4 11h7M4 16h7M14 12v7l6-3.5z")
+    val listAdd = stroke("listAdd", "M4 6h11M4 11h11M4 16h7M18 13v8M14 17h8")
     val refresh = stroke("refresh", "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7")
 }

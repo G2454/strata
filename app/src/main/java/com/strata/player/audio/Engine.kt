@@ -323,6 +323,15 @@ class Engine(
         bump()
     }
 
+    /** Many tracks at once, in order: right after the current one, or at the end of the playback queue. */
+    fun enqueue(ts: List<Track>, next: Boolean) {
+        if (ts.isEmpty()) return
+        if (player.mediaItemCount == 0) { playContext(ts.map { it.id }, ts.first().id, "Queue"); return }
+        val at = player.currentMediaItemIndex + 1 + if (next) 0 else queuedItemsAfterCurrent().size
+        player.addMediaItems(at, ts.map { item(it, true) })
+        bump()
+    }
+
     fun removeAt(index: Int) {
         if (index in 0 until player.mediaItemCount && index != player.currentMediaItemIndex) player.removeMediaItem(index)
     }

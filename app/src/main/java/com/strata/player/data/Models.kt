@@ -147,7 +147,15 @@ data class Settings(
     val order: Order = Order.DEFAULT,
     val ignoreShort: Boolean = true,
     val pauseOnDisconnect: Boolean = true,
+    /** Give every performer of "A feat. B" / "A & B" their own artist page entry. */
+    val splitArtists: Boolean = true,
+    /** Artist names never to split, separated by ";" or new lines. */
+    val keepTogether: String = "",
 )
+
+fun Settings.artistSplitter(): ArtistSplitter =
+    if (!splitArtists) ArtistSplitter.DISABLED
+    else ArtistSplitter(true, keepTogether.split(';', '\n').map { it.trim() }.filter { it.isNotEmpty() })
 
 data class Session(
     val ctx: List<Long> = emptyList(),

@@ -87,7 +87,7 @@ fun SheetHost(model: AppModel) {
                 Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 18.dp)) {
                     when (val s = last) {
                         is Sheet.TrackMenu -> TrackMenu(model, s)
-                        is Sheet.AddToPlaylist -> AddToPlaylist(model, s.id)
+                        is Sheet.AddToPlaylist -> AddToPlaylist(model, s.ids)
                         is Sheet.NewPlaylist -> NewPlaylist(model, s)
                         is Sheet.PlaylistMenu -> PlaylistMenu(model, s.id)
                         Sheet.Queue -> QueueSheet(model)
@@ -145,9 +145,15 @@ private fun TrackMenu(model: AppModel, s: Sheet.TrackMenu) {
     ActionRow("Play next") { e.playNext(tr); model.sheet = null; model.flash("Plays next") }
     val qn = e.queuedItemsAfterCurrent().size
     ActionRow("Add to playback queue", if (qn > 0) "queue · $qn" else "") { e.addToQueue(tr); model.sheet = null; model.flash("Added to queue (${qn + 1})") }
-    ActionRow("Add to playlist…", "›") { model.sheet = Sheet.AddToPlaylist(tr.id) }
+    ActionRow("Add to playlist…", "›") { model.sheet = Sheet.AddToPlaylist(listOf(tr.id)) }
     ActionRow("Go to album") { model.goTo(Detail.AlbumD(tr.albumId)) }
-    ActionRow("Go to artist") { model.goTo(Detail.ArtistD(tr.artist)) }
+    val artists = model.index.artistsOf(tr)
+    if (artists.size <= 1) {
+        ActionRow("Go to artist") { model.goTo(Detail.ArtistD(artists.firstOrNull() ?: tr.artist)) }
+    } else {
+        // "A feat. B": one row per performer.
+        artists.forEach { a -> ActionRow("Go to $a", "artist") { model.goTo(Detail.ArtistD(a)) } }
+    }
     val pid = s.fromPlaylist
     if (pid != null) {
         val ids = model.user.playlists.firstOrNull { it.id == pid }?.ids ?: emptyList()
@@ -183,12 +189,13 @@ fun StarRow(rating: Int, onRate: (Int) -> Unit) {
 // ------------------------------------------------------------------ playlists
 
 @Composable
-private fun AddToPlaylist(model: AppModel, id: Long) {
+private fun AddToPlaylist(model: AppModel, ids: List<Long>) {
     val t = LocalTokens.current
-    val tr = model.track(id) ?: return
-    SheetTitle("Add to playlist", tr.title)
+    if (ids.isEmpty()) return
+    val sub = if (ids.size == 1) model.track(ids[0])?.title ?: "" else Fmt.plural(ids.size, "track")
+    SheetTitle("Add to playlist", sub)
     Row(
-        Modifier.fillMaxWidth().height(60.dp).clickable { model.sheet = Sheet.NewPlaylist(id, false) }.padding(horizontal = 20.dp),
+        Modifier.fillMaxWidth().height(60.dp).clickable { model.sheet = Sheet.NewPlaylist(ids, false) }.padding(horizontal = 20.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, t.line2, RoundedCornerShape(10.dp)), contentAlignment = Alignment.Center) {
@@ -198,18 +205,25 @@ private fun AddToPlaylist(model: AppModel, id: Long) {
         Text("New playlist", style = Type.body(15, FontWeight.SemiBold), color = t.accent)
     }
     model.user.playlists.filter { !it.auto }.forEach { p ->
-        val has = id in p.ids
+        val have = ids.count { it in p.ids }
         Row(
-            Modifier.fillMaxWidth().height(60.dp).clickable { model.addToPlaylist(p.id, id); model.sheet = null }.padding(horizontal = 20.dp),
+            Modifier.fillMaxWidth().height(60.dp).clickable {
+                model.addToPlaylist(p.id, ids)
+                model.sheet = null
+                model.clearSelection()
+            }.padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Mosaic(p.ids.mapNotNull { model.track(it) }, Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)))
             Spacer(Modifier.width(14.dp))
             Column(Modifier.weight(1f)) {
                 Text(p.name, style = Type.body(15, FontWeight.Medium), color = t.text)
-                Text(Fmt.plural(p.ids.size, "track"), style = Type.body(12), color = t.sub)
+                Text(
+                    Fmt.plural(p.ids.size, "track") + if (ids.size > 1 && have > 0) " · $have of these already in" else "",
+                    style = Type.body(12), color = t.sub,
+                )
             }
-            if (has) Icon(Ic.check, null, tint = t.accent, modifier = Modifier.size(20.dp))
+            if (have == ids.size) Icon(Ic.check, null, tint = t.accent, modifier = Modifier.size(20.dp))
         }
     }
 }
@@ -245,10 +259,21 @@ private fun NewPlaylist(model: AppModel, s: Sheet.NewPlaylist) {
             style = Type.mono(11), color = LocalTokens.current.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
         )
     }
-    BigButton("Create", null, true, {
-        val id = model.createPlaylist(name, if (s.auto) query.ifBlank { "rating>=4" } else null, s.withTrack)
+    if (!s.auto && s.withTracks.size > 1) {
+        Text(
+            "${Fmt.plural(s.withTracks.size, "track")} will be added.", style = Type.body(13), color = LocalTokens.current.sub,
+            modifier = Modifier.padding(horizontal = 20.dp, vertical = 4.dp),
+        )
+    }
+    BigButton(if (!s.auto && s.withTracks.isEmpty()) "Create and add songs" else "Create", null, true, {
+        val id = model.createPlaylist(name, if (s.auto) query.ifBlank { "rating>=4" } else null, if (s.auto) emptyList() else s.withTracks)
         model.sheet = null
-        if (s.withTrack == null) model.open(Detail.PlaylistD(id))
+        model.clearSelection()
+        if (s.withTracks.isEmpty() || s.auto) {
+            model.open(Detail.PlaylistD(id))
+            // An empty playlist goes straight to the multi-select song picker.
+            if (!s.auto) model.pickerFor = id
+        }
     }, Modifier.padding(16.dp).fillMaxWidth())
 }
 

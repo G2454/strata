@@ -25,6 +25,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -198,6 +200,38 @@ private fun InfoCard(rows: List<Pair<String, String>>) {
 
 // ====================================================================== Settings
 
+/** Band names that must never be split, e.g. "Simon & Garfunkel". Applied on "Save" so typing stays fast. */
+@Composable
+private fun KeepTogetherField(model: AppModel) {
+    val t = LocalTokens.current
+    val saved = model.settings.keepTogether
+    var text by remember(saved) { mutableStateOf(saved) }
+    Divider()
+    Column(Modifier.fillMaxWidth().padding(16.dp)) {
+        Text("Never split these names", style = Type.body(15, FontWeight.Medium), color = t.text)
+        Text(
+            "Separate with ; — common bands like AC/DC or Simon & Garfunkel are already kept together.",
+            style = Type.body(12), color = t.sub, modifier = Modifier.padding(top = 2.dp, bottom = 8.dp),
+        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(t.surface2).padding(horizontal = 12.dp, vertical = 12.dp)) {
+                if (text.isEmpty()) Text("Hall & Oates; Of Monsters and Men", style = Type.body(14), color = t.faint, maxLines = 1)
+                BasicTextField(
+                    text, { text = it }, textStyle = Type.body(14).copy(color = t.text), cursorBrush = SolidColor(t.accentFill),
+                    modifier = Modifier.fillMaxWidth().testTag("keep-together"),
+                )
+            }
+            if (text != saved) {
+                Text(
+                    "Save", style = Type.body(14, FontWeight.SemiBold), color = t.accent,
+                    modifier = Modifier.padding(start = 6.dp).clip(RoundedCornerShape(10.dp))
+                        .clickable { model.updateSettings { it.copy(keepTogether = text.trim()) } }.padding(12.dp),
+                )
+            }
+        }
+    }
+}
+
 @Composable
 fun SettingsScreen(model: AppModel) {
     val t = LocalTokens.current
@@ -236,6 +270,12 @@ fun SettingsScreen(model: AppModel) {
                     Text(if (model.loading) "Scanning…" else "Rescan library", style = Type.body(14, FontWeight.SemiBold), color = t.accent)
                 }
                 SwitchRow("Ignore short files", "Skip anything under 30 seconds (ringtones, notifications)", s.ignoreShort, { v -> model.updateSettings { it.copy(ignoreShort = v) } }, topLine = true)
+                SwitchRow(
+                    "Separate featured artists",
+                    "“A feat. B”, “A & B” and “Song (feat. B)” appear on every artist's page",
+                    s.splitArtists, { v -> model.updateSettings { it.copy(splitArtists = v) } }, topLine = true,
+                )
+                if (s.splitArtists) KeepTogetherField(model)
             }
 
             SectionLabel("Playback", Modifier.padding(top = 14.dp))

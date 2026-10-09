@@ -160,6 +160,8 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
             order = enumOf(o.optString("order"), d.order),
             ignoreShort = o.optBoolean("ignoreShort", d.ignoreShort),
             pauseOnDisconnect = o.optBoolean("pauseOnDisconnect", d.pauseOnDisconnect),
+            splitArtists = o.optBoolean("splitArtists", d.splitArtists),
+            keepTogether = o.optString("keepTogether", d.keepTogether),
         )
     }
 
@@ -171,6 +173,7 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
         put("speed", s.speed.toDouble()); put("keepPitch", s.keepPitch); put("balance", s.balance.toDouble())
         put("mono", s.mono); put("widen", s.widen); put("limiter", s.limiter); put("chain", JSONArray(s.chain))
         put("order", s.order.name); put("ignoreShort", s.ignoreShort); put("pauseOnDisconnect", s.pauseOnDisconnect)
+        put("splitArtists", s.splitArtists); put("keepTogether", s.keepTogether)
     }
 
     private fun sessionFrom(o: JSONObject) = Session(

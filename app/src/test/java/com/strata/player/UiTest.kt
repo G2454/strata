@@ -3,6 +3,7 @@ package com.strata.player
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.swipe
@@ -261,7 +262,7 @@ class UiTest {
         idle { model.sheet = null }
 
         tapDesc("More options for Saltlight")
-        tapText("Add to playlist…", "sheet"); assertEquals(Sheet.AddToPlaylist(2), model.sheet)
+        tapText("Add to playlist…", "sheet"); assertEquals(Sheet.AddToPlaylist(listOf(2L)), model.sheet)
         tapText("New playlist", "sheet"); assertTrue(model.sheet is Sheet.NewPlaylist)
         node(hasSetTextAction() and inTag("sheet")).performTextInput("Road trip")
         tapText("Create", "sheet")
@@ -298,7 +299,7 @@ class UiTest {
 
     @Test
     fun playlistTrackMenuMoveAndRemove() {
-        val id = model.createPlaylist("Mix", null, 1)
+        val id = model.createPlaylist("Mix", null, listOf(1L))
         idle { model.addToPlaylist(id, 2); model.addToPlaylist(id, 3) }
         idle { model.open(Detail.PlaylistD(id)) }
         tapDesc("More options for Lanterns", "detail")
@@ -439,11 +440,24 @@ class UiTest {
         assertNotEquals(-1L, model.engine.currentId)
         tapDesc("Back", "detail")
 
-        tapText("New"); assertEquals(Sheet.NewPlaylist(null, false), model.sheet)
+        tapText("New"); assertEquals(Sheet.NewPlaylist(emptyList(), false), model.sheet)
         node(hasSetTextAction() and inTag("sheet")).performTextInput("Evening")
-        tapText("Create", "sheet")
+        tapText("Create and add songs", "sheet")
         val p = model.user.playlists.first { it.name == "Evening" }
         assertEquals(Detail.PlaylistD(p.id), model.details.last())
+
+        // An empty playlist opens the multi-select picker straight away.
+        assertEquals(p.id, model.pickerFor)
+        tapText("Lanterns", "picker"); tapText("Grid City", "picker")
+        node(hasText("Add 2 songs") and inTag("picker")).assertExists()
+        node(hasSetTextAction() and inTag("picker")).performTextInput("genre:jazz")
+        rule.waitForIdle()
+        rule.onAllNodes(hasText("Lanterns") and inTag("picker")).assertCountEquals(0)
+        tapText("Select all shown", "picker")
+        tapText("Add 4 songs", "picker")
+        assertNull(model.pickerFor)
+        assertEquals(listOf(1L, 6L, 5L, 4L).sorted(), model.user.playlists.first { it.id == p.id }.ids.sorted())
+        assertEquals(4, model.user.playlists.first { it.id == p.id }.ids.size)
 
         tapDesc("Playlist options", "detail"); assertEquals(Sheet.PlaylistMenu(p.id), model.sheet)
         node(hasSetTextAction() and inTag("sheet")).performTextReplacement("Late evening")

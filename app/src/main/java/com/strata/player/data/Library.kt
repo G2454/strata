@@ -95,8 +95,16 @@ object MediaScanner {
 }
 
 /** Groupings computed once per scan. */
-class LibraryIndex(val tracks: List<Track>) {
+class LibraryIndex(val tracks: List<Track>, splitter: ArtistSplitter = ArtistSplitter()) {
     val byId: Map<Long, Track> = tracks.associateBy { it.id }
+
+    /** Every performer of each track: "Eminem feat. Rihanna" counts for both Eminem and Rihanna. */
+    val artistsById: Map<Long, List<String>> = run {
+        splitter.learn(tracks)
+        tracks.associate { it.id to splitter.artistsOf(it) }
+    }
+
+    fun artistsOf(t: Track): List<String> = artistsById[t.id] ?: listOf(t.artist)
 
     val albums: List<Album> = tracks.groupBy { it.albumId }.map { (id, ts) ->
         val sorted = ts.sortedWith(compareBy({ it.discNo }, { it.trackNo }, { it.title }))
@@ -113,7 +121,23 @@ class LibraryIndex(val tracks: List<Track>) {
 
     val albumById: Map<Long, Album> = albums.associateBy { it.id }
 
-    val artists: List<Pair<String, List<Track>>> = tracks.groupBy { it.artist }.toList().sortedBy { it.first.lowercase() }
+    /** One entry per performer, each with every track they appear on (alone or as a guest). */
+    val artists: List<Pair<String, List<Track>>> = run {
+        val m = LinkedHashMap<String, MutableList<Track>>()
+        val names = HashMap<String, String>()
+        for (t in tracks) for (a in artistsOf(t)) {
+            val key = a.lowercase()
+            val name = names.getOrPut(key) { a }
+            m.getOrPut(name) { ArrayList() } += t
+        }
+        m.toList().sortedBy { it.first.lowercase() }
+    }
+
+    val tracksByArtist: Map<String, List<Track>> = artists.toMap()
+
+    /** Tracks of an artist page; accepts any spelling of the name. */
+    fun tracksOfArtist(name: String): List<Track> =
+        tracksByArtist[name] ?: artists.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second ?: emptyList()
     val genres: List<Pair<String, List<Track>>> = tracks.groupBy { it.genre }.toList().sortedBy { it.first.lowercase() }
     val folders: List<Pair<String, List<Track>>> = tracks.groupBy { it.folder }.toList().sortedBy { it.first.lowercase() }
     val composers: List<Pair<String, List<Track>>> = tracks.groupBy { it.composer }.toList().sortedBy { it.first.lowercase() }
