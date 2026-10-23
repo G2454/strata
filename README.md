@@ -7,6 +7,30 @@
 A local-file music player for Android, loosely inspired by foobar2000 and Samsung Music.
 Kotlin, Jetpack Compose, Media3/ExoPlayer.
 
+## Screenshots
+
+<table>
+  <tr>
+    <td align="center"><img src="docs/screenshots/01_library.png" width="200" alt="Library"><br><sub>Library</sub></td>
+    <td align="center"><img src="docs/screenshots/04_now_playing.png" width="200" alt="Now playing"><br><sub>Now playing</sub></td>
+    <td align="center"><img src="docs/screenshots/05_lyrics.png" width="200" alt="Synced lyrics"><br><sub>Synced lyrics</sub></td>
+    <td align="center"><img src="docs/screenshots/03_artist.png" width="200" alt="Artist page with features"><br><sub>Artist page with features</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/07_multi_select.png" width="200" alt="Multi-select"><br><sub>Multi-select</sub></td>
+    <td align="center"><img src="docs/screenshots/08_song_picker.png" width="200" alt="Playlist song picker"><br><sub>Playlist song picker</sub></td>
+    <td align="center"><img src="docs/screenshots/06_queue.png" width="200" alt="Queue"><br><sub>Queue</sub></td>
+    <td align="center"><img src="docs/screenshots/10_search.png" width="200" alt="Query search"><br><sub>Query search</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/09_sound.png" width="200" alt="Sound / EQ"><br><sub>Sound / EQ</sub></td>
+    <td align="center"><img src="docs/screenshots/02_albums.png" width="200" alt="Albums"><br><sub>Albums</sub></td>
+    <td align="center"><img src="docs/screenshots/11_library_light.png" width="200" alt="Light theme"><br><sub>Light theme</sub></td>
+  </tr>
+</table>
+
+<sub>Rendered from the real app with a made-up sample library (GitHub Actions, <code>ScreenshotTest</code>). Album covers are the app's generated artwork.</sub>
+
 ## Building
 
 GitHub Actions builds it on every push: the APKs appear under **Actions → latest run → Artifacts → Strata-apk**.
