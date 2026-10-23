@@ -225,8 +225,9 @@ class AppModel(private val app: Application) {
 
     /** Test hook: installs a fixed library without touching MediaStore. */
     @androidx.annotation.VisibleForTesting
-    fun installLibraryForTest(tracks: List<Track>) {
+    fun installLibraryForTest(tracks: List<Track>, techInfo: Map<Long, Tech> = emptyMap()) {
         restored = true
+        if (techInfo.isNotEmpty()) tech = tech + techInfo
         rawTracks = tracks
         index = LibraryIndex(tracks, settings.artistSplitter())
         hasPermission = true

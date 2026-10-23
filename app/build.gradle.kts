@@ -82,6 +82,9 @@ dependencies {
     testImplementation(composeBom)
     testImplementation("androidx.compose.ui:ui-test-junit4")
     testImplementation("androidx.test.espresso:espresso-core:3.6.1")
+    // README screenshots (ScreenshotTest, run with -Pscreenshots)
+    testImplementation("io.github.takahirom.roborazzi:roborazzi:1.39.0")
+    testImplementation("io.github.takahirom.roborazzi:roborazzi-compose:1.39.0")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
@@ -92,6 +95,14 @@ tasks.withType<Test>().configureEach {
     forkEvery = 1
     // Never let a stuck test eat the whole CI job.
     timeout.set(Duration.ofMinutes(25))
+    // Screenshots for the README are only made on request: ./gradlew testDebugUnitTest -Pscreenshots
+    if (project.hasProperty("screenshots")) {
+        systemProperty("roborazzi.test.record", "true")
+        systemProperty("strata.screenshots", rootProject.file("out/screenshots").absolutePath)
+        filter { includeTestsMatching("*ScreenshotTest") }
+    } else {
+        exclude("**/ScreenshotTest*")
+    }
     testLogging {
         events("passed", "failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

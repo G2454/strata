@@ -33,3 +33,15 @@ jobs:
         with:
           name: Strata-apk
           path: out/*.apk
+
+      # README screenshots: renders the real app with a sample library. Never blocks the APK build.
+      - name: Make README screenshots
+        continue-on-error: true
+        run: ./gradlew --no-daemon testDebugUnitTest -Pscreenshots
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Strata-screenshots
+          path: out/screenshots/*.png
+          if-no-files-found: warn
