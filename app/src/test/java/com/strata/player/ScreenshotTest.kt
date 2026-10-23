@@ -1,6 +1,16 @@
 package com.strata.player
 
 import android.net.Uri
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.os.Looper
+import android.view.View
+import android.widget.LinearLayout
+import com.strata.player.widget.StrataWidgets
+import com.strata.player.widget.WidgetState
+import org.robolectric.Shadows.shadowOf
+import java.io.FileOutputStream
+import java.time.Duration
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
@@ -190,17 +200,19 @@ class ScreenshotTest {
         playLanterns()
         val list = ids
         idle {
+            // Rows near the top, so every selected one is visible.
             model.startSelection(list, 6)
-            model.toggleSelected(list, 13)
-            model.toggleSelected(list, 7)
-            model.toggleSelected(list, 12)
+            model.toggleSelected(list, 10)
+            model.toggleSelected(list, 9)
+            model.toggleSelected(list, 3)
         }
         shot("07_multi_select")
     }
 
     @Test
     fun songPicker() {
-        val pid = model.createPlaylist("Sunday morning", null, listOf(12L))
+        val pid = "p-sunday"
+        model.updateUser { u -> u.copy(playlists = u.playlists + com.strata.player.data.Playlist(pid, "Sunday morning", listOf(12L))) }
         idle { model.selectTab(Tab.PLAYLISTS); model.open(Detail.PlaylistD(pid)); model.pickerFor = pid }
         for (title in listOf("Blue Hour Waltz", "Harbor Song", "Low Clouds")) {
             rule.onAllNodes(hasText(title) and hasAnyAncestor(hasTestTag("picker"))).onFirst().performClick()
@@ -227,5 +239,86 @@ class ScreenshotTest {
         playLanterns()
         idle { model.updateSettings { it.copy(theme = ThemeMode.LIGHT) } }
         shot("11_library_light")
+    }
+
+    /** Lets the app's toast time out, so it doesn't cover the screenshot. */
+    private fun clearToast() {
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(6))
+        rule.waitForIdle()
+    }
+
+    @Test
+    fun savedQueues() {
+        playLanterns()
+        idle {
+            model.createQueue("Tonight", listOf(12L, 13L, 14L, 6L))
+            model.createQueue("Workout", listOf(9L, 10L, 11L, 15L, 16L))
+        }
+        idle { model.sheet = Sheet.Queues }
+        clearToast()
+        shot("12_queues")
+    }
+
+    @Test
+    fun sleepTimer() {
+        playLanterns()
+        idle { model.engine.setSleepMinutes(30) }
+        idle { model.nowOpen = true; model.sheet = Sheet.Sleep }
+        shot("13_sleep_timer")
+    }
+
+    @Test
+    fun folders() {
+        val voiceDir = "${musicDir.absolutePath}/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Voice Notes/202544"
+        val voice = Track(
+            id = 40, uri = Uri.parse("content://media/external/audio/media/40"), title = "PTT-20250114-WA0003", artist = "<unknown>",
+            album = "202544", albumId = 40, albumArtist = "<unknown>", genre = "", composer = "", year = 0, trackNo = 0, discNo = 0,
+            durationMs = 41_000, path = "$voiceDir/PTT-20250114-WA0003.opus", folder = voiceDir, sizeBytes = 60_000,
+            dateAddedSec = 1_760_100_000, mime = "audio/ogg", bitrateBps = 0,
+        )
+        idle { model.installLibraryForTest(library + voice, tech) }
+        idle { model.settingsOpen = true; model.sheet = Sheet.Folders }
+        shot("14_folders")
+    }
+
+    @Test
+    fun lostMemories() {
+        val now = System.currentTimeMillis()
+        val day = 24 * 60 * 60 * 1000L
+        idle {
+            model.updateUser { u ->
+                u.copy(lastPlayed = mapOf(2L to now - 220 * day, 9L to now - 390 * day, 13L to now - 300 * day, 7L to now - 260 * day, 1L to now - day, 6L to now - 2 * day))
+            }
+        }
+        idle { model.selectTab(Tab.PLAYLISTS); model.open(Detail.PlaylistD("lost")) }
+        shot("15_lost_memories")
+    }
+
+    /** The two home-screen widgets, drawn from their real layouts on a dark home screen. */
+    @Test
+    @Config(qualifiers = "+night")
+    fun widgets() {
+        val ctx = ApplicationProvider.getApplicationContext<StrataApp>()
+        val d = ctx.resources.displayMetrics.density
+        fun px(dp: Int) = (dp * d).toInt()
+        val state = WidgetState(1, "Lanterns", "Mira Solano", "Tidal Hours", 32, "", playing = true, favorite = true)
+        val art = StrataWidgets.generated(32, px(96))
+        val board = LinearLayout(ctx).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(0xFF0B0C0F.toInt())
+            setPadding(px(16), px(24), px(16), px(24))
+        }
+        fun add(v: View, hDp: Int) {
+            board.addView(v, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(hDp)).apply { bottomMargin = px(18) })
+        }
+        add(StrataWidgets.buildPlayer(ctx, state, art, large = true).apply(ctx, board), 184)
+        add(StrataWidgets.buildPlayer(ctx, state, art, large = false).apply(ctx, board), 72)
+        add(StrataWidgets.buildPlayFrom(ctx).apply(ctx, board), 184)
+        val w = px(393)
+        board.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
+        board.layout(0, 0, w, board.measuredHeight)
+        val bmp = Bitmap.createBitmap(w, board.measuredHeight, Bitmap.Config.ARGB_8888)
+        board.draw(Canvas(bmp))
+        FileOutputStream(File(outDir, "16_widgets.png")).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
 }
