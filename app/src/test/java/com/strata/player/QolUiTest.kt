@@ -167,7 +167,8 @@ class QolUiTest {
 
         // Drag Cedar's handle two rows down.
         val rowPx = 58f * 3f
-        node(hasContentDescription("Reorder Cedar") and inTag("sheet")).performTouchInput {
+        // The handle's label merges into its row, so look it up in the unmerged tree to touch the handle itself.
+        rule.onAllNodes(hasContentDescription("Reorder Cedar") and inTag("sheet"), useUnmergedTree = true).onFirst().performTouchInput {
             down(center)
             moveBy(Offset(0f, 30f))
             moveBy(Offset(0f, rowPx))
