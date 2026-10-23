@@ -38,6 +38,40 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
         JSONObject().apply { t.forEach { (k, v) -> put(k.toString(), JSONArray(listOf(v.sampleRate, v.bits, v.channels))) } }
     }
 
+    /** Saved queues plus which one is playing. */
+    fun loadQueues(): Pair<List<SavedQueue>, String?> = readJson("queues.json")?.let { o ->
+        val a = o.optJSONArray("queues") ?: JSONArray()
+        val list = List(a.length()) {
+            val q = a.getJSONObject(it)
+            SavedQueue(
+                id = q.getString("id"), name = q.getString("name"), ids = longs(q.optJSONArray("ids")),
+                index = q.optInt("index", 0), positionMs = q.optLong("positionMs", 0), updatedAt = q.optLong("updatedAt", 0),
+                auto = q.optBoolean("auto", false),
+            )
+        }
+        list to (if (o.has("active")) o.getString("active") else null)
+    } ?: (emptyList<SavedQueue>() to null)
+
+    fun saveQueues(queues: List<SavedQueue>, active: String?) = saveLater("queues.json") {
+        JSONObject().apply {
+            put("queues", JSONArray().apply {
+                queues.forEach { q ->
+                    put(JSONObject().apply {
+                        put("id", q.id); put("name", q.name); put("ids", JSONArray(q.ids)); put("index", q.index)
+                        put("positionMs", q.positionMs); put("updatedAt", q.updatedAt); put("auto", q.auto)
+                    })
+                }
+            })
+            if (active != null) put("active", active)
+        }
+    }
+
+    /** Remembered positions of long files, by track id. */
+    fun loadPositions(): Map<Long, Long> = longMap(readJson("positions.json"))
+    fun savePositions(p: Map<Long, Long>) = saveLater("positions.json", 1000) {
+        JSONObject().apply { p.forEach { (k, v) -> put(k.toString(), v) } }
+    }
+
     fun waveFile(id: Long): File = File(File(dir, "waves").apply { mkdirs() }, "$id.bin")
 
     // ------------------------------------------------------------------
@@ -162,6 +196,10 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
             pauseOnDisconnect = o.optBoolean("pauseOnDisconnect", d.pauseOnDisconnect),
             splitArtists = o.optBoolean("splitArtists", d.splitArtists),
             keepTogether = o.optString("keepTogether", d.keepTogether),
+            resumeOnWired = o.optBoolean("resumeOnWired", d.resumeOnWired),
+            resumeOnBluetooth = o.optBoolean("resumeOnBluetooth", d.resumeOnBluetooth),
+            rememberLongPositions = o.optBoolean("rememberLongPositions", d.rememberLongPositions),
+            excludedFolders = o.optJSONArray("excludedFolders")?.let { a -> List(a.length()) { a.getString(it) }.toSet() } ?: d.excludedFolders,
         )
     }
 
@@ -174,6 +212,8 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
         put("mono", s.mono); put("widen", s.widen); put("limiter", s.limiter); put("chain", JSONArray(s.chain))
         put("order", s.order.name); put("ignoreShort", s.ignoreShort); put("pauseOnDisconnect", s.pauseOnDisconnect)
         put("splitArtists", s.splitArtists); put("keepTogether", s.keepTogether)
+        put("resumeOnWired", s.resumeOnWired); put("resumeOnBluetooth", s.resumeOnBluetooth)
+        put("rememberLongPositions", s.rememberLongPositions); put("excludedFolders", JSONArray(s.excludedFolders.toList()))
     }
 
     private fun sessionFrom(o: JSONObject) = Session(

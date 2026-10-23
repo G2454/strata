@@ -12,6 +12,9 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -175,10 +178,29 @@ private fun MiniPlayer(model: AppModel) {
         }
     }
     val prog = if (cur.durationMs > 0) (pos.toFloat() / cur.durationMs).coerceIn(0f, 1f) else 0f
+    // Swipe left/right to skip, swipe up to open the player.
+    var dragX by remember { mutableStateOf(0f) }
+    var dragY by remember { mutableStateOf(0f) }
+    val density = androidx.compose.ui.platform.LocalDensity.current
+    val skipPx = with(density) { 56.dp.toPx() }
+    val upPx = with(density) { 40.dp.toPx() }
     Box(Modifier.fillMaxWidth().testTag("miniplayer").background(t.bg).padding(start = 10.dp, end = 10.dp, top = 6.dp)) {
         Box(
             Modifier
                 .fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectDragGestures(
+                        onDragEnd = {
+                            when {
+                                kotlin.math.abs(dragX) > skipPx && kotlin.math.abs(dragX) > kotlin.math.abs(dragY) -> if (dragX < 0) e.next() else e.previous()
+                                -dragY > upPx && kotlin.math.abs(dragY) > kotlin.math.abs(dragX) -> model.nowOpen = true
+                            }
+                            dragX = 0f; dragY = 0f
+                        },
+                        onDragCancel = { dragX = 0f; dragY = 0f },
+                    ) { change, d -> change.consume(); dragX += d.x; dragY += d.y }
+                }
+                .offset { androidx.compose.ui.unit.IntOffset((dragX * 0.35f).toInt(), 0) }
                 .height(62.dp)
                 .shadow(10.dp, RoundedCornerShape(18.dp), clip = false, ambientColor = Color.Black.copy(alpha = 0.3f), spotColor = Color.Black.copy(alpha = 0.3f))
                 .clip(RoundedCornerShape(18.dp))
@@ -240,14 +262,28 @@ private fun androidx.compose.foundation.layout.RowScope.NavItem(icon: ImageVecto
 private fun ToastHost(model: AppModel) {
     val t = LocalTokens.current
     val msg = model.toast
+    val action = model.toastAction
     Box(Modifier.fillMaxSize().navigationBarsPadding().padding(bottom = 150.dp, start = 24.dp, end = 24.dp), contentAlignment = Alignment.BottomCenter) {
         AnimatedVisibility(msg != null, enter = fadeIn() + slideInVertically { it / 2 }, exit = fadeOut()) {
             var last by remember { mutableStateOf("") }
-            if (msg != null) last = msg
-            Text(
-                last, style = Type.body(14, FontWeight.Medium), color = t.bg, textAlign = TextAlign.Center,
-                modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(t.text).padding(horizontal = 18.dp, vertical = 12.dp),
-            )
+            var lastAction by remember { mutableStateOf<Pair<String, () -> Unit>?>(null) }
+            if (msg != null) { last = msg; lastAction = action }
+            Row(
+                Modifier.testTag("toast").clip(RoundedCornerShape(16.dp)).background(t.text).padding(start = 18.dp, end = if (lastAction != null) 6.dp else 18.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    last, style = Type.body(14, FontWeight.Medium), color = t.bg, textAlign = TextAlign.Center,
+                    modifier = Modifier.padding(vertical = 12.dp).weight(1f, fill = false),
+                )
+                lastAction?.let { (label, run) ->
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        label, style = Type.body(14, FontWeight.Bold), color = if (t.dark) Color(0xFF0A6593) else t.accentRaw,
+                        modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable(role = Role.Button) { run() }.padding(horizontal = 12.dp, vertical = 12.dp),
+                    )
+                }
+            }
         }
     }
 }

@@ -6,6 +6,9 @@ import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
@@ -62,7 +65,9 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -142,12 +147,7 @@ fun NowPlayingScreen(model: AppModel) {
             Crossfade(model.npView, label = "stage") { v ->
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     when (v) {
-                        NpView.ART -> Art(
-                            cur,
-                            Modifier.widthIn(max = 340.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
-                                .shadow(30.dp, RoundedCornerShape(24.dp), ambientColor = t.accentRaw, spotColor = t.accentRaw),
-                            RoundedCornerShape(24.dp), big = true,
-                        )
+                        NpView.ART -> CoverWithGestures(model, cur)
                         NpView.LYRICS -> LyricsView(model, cur)
                         NpView.VIZ -> Visualizer(e)
                         NpView.INFO -> InfoTable(model, cur)
@@ -179,13 +179,20 @@ fun NowPlayingScreen(model: AppModel) {
                 Text(label, style = Type.mono(10.5f), color = if (hi) t.accent else t.sub, modifier = Modifier.border(1.dp, t.line2, RoundedCornerShape(6.dp)).padding(horizontal = 7.dp, vertical = 3.dp))
             }
         }
+        // Rating
+        Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 2.dp)) {
+            StarRow(model.rating(cur)) { model.setRating(cur.id, it) }
+        }
         // Seek
         SeekBar(model, cur)
         // Controls
         Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 8.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             val shuffleOn = model.settings.order.isShuffle
             val repeatOn = model.settings.order.isRepeat
-            ModeButton(Ic.shuffle, "Shuffle: ${model.settings.order.label}", shuffleOn, null) {
+            ModeButton(Ic.shuffle, "Shuffle: ${model.settings.order.label}", shuffleOn, null, onLongClick = {
+                // Long-press: jump to one random track of what's playing (foobar2000 mobile).
+                model.playRandom(e.context.ifEmpty { model.index.tracks.map { it.id } }, e.ctxName)
+            }) {
                 val seq = listOf(Order.DEFAULT, Order.SHUFFLE_TRACKS, Order.SHUFFLE_ALBUMS, Order.SHUFFLE_FOLDERS, Order.RANDOM)
                 val i = seq.indexOf(model.settings.order)
                 val next = if (i < 0) Order.SHUFFLE_TRACKS else seq[(i + 1) % seq.size]
@@ -228,9 +235,70 @@ fun NowPlayingScreen(model: AppModel) {
     }
 }
 
+/**
+ * The cover on the player: swipe left/right to skip, swipe up for the queue,
+ * double-tap the right half to jump 30 s ahead (left half: 30 s back).
+ */
+@Composable
+private fun CoverWithGestures(model: AppModel, cur: Track) {
+    val t = LocalTokens.current
+    val e = model.engine
+    var dx by remember { mutableStateOf(0f) }
+    var dy by remember { mutableStateOf(0f) }
+    var flash by remember { mutableStateOf<String?>(null) }
+    var flashKey by remember { mutableIntStateOf(0) }
+    LaunchedEffect(flashKey) {
+        if (flash != null) { delay(800); flash = null }
+    }
+    val density = LocalDensity.current
+    val skipPx = with(density) { 72.dp.toPx() }
+    val upPx = with(density) { 56.dp.toPx() }
+    Box(contentAlignment = Alignment.Center) {
+        Art(
+            cur,
+            Modifier.widthIn(max = 340.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
+                .testTag("np-art")
+                .semantics { contentDescription = "Cover. Swipe to skip, swipe up for the queue, double-tap to jump 30 seconds" }
+                .pointerInput(cur.id) {
+                    detectTapGestures(onDoubleTap = { o ->
+                        val forward = o.x >= size.width / 2f
+                        e.seekBy(if (forward) 30_000 else -30_000)
+                        flash = if (forward) "+30 s" else "−30 s"
+                        flashKey++
+                    })
+                }
+                .pointerInput(cur.id) {
+                    detectDragGestures(
+                        onDragEnd = {
+                            when {
+                                kotlin.math.abs(dx) > skipPx && kotlin.math.abs(dx) > kotlin.math.abs(dy) -> if (dx < 0) e.next() else e.previous()
+                                -dy > upPx && kotlin.math.abs(dy) > kotlin.math.abs(dx) -> model.sheet = Sheet.Queue
+                            }
+                            dx = 0f; dy = 0f
+                        },
+                        onDragCancel = { dx = 0f; dy = 0f },
+                    ) { change, d -> change.consume(); dx += d.x; dy += d.y }
+                }
+                .graphicsLayer {
+                    translationX = dx * 0.5f
+                    translationY = dy.coerceAtMost(0f) * 0.25f
+                }
+                .shadow(30.dp, RoundedCornerShape(24.dp), ambientColor = t.accentRaw, spotColor = t.accentRaw),
+            RoundedCornerShape(24.dp), big = true,
+        )
+        flash?.let {
+            Text(
+                it, style = Type.display(22, FontWeight.SemiBold), color = Color.White,
+                modifier = Modifier.clip(RoundedCornerShape(22.dp)).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 18.dp, vertical = 10.dp),
+            )
+        }
+    }
+}
+
 @Composable
 private fun sleepLabel(e: Engine): String? {
     if (e.sleepEndOfTrack) return "End trk"
+    e.sleepTracksLeft?.let { return "$it songs" }
     val at = e.sleepAtMs ?: return null
     val left by produceState(e.sleepRemainingMs() ?: 0L, at) {
         while (true) { value = e.sleepRemainingMs() ?: 0L; delay(1000) }
@@ -238,10 +306,19 @@ private fun sleepLabel(e: Engine): String? {
     return Fmt.time(left)
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ModeButton(icon: ImageVector, desc: String, on: Boolean, badge: String?, onClick: () -> Unit) {
+private fun ModeButton(icon: ImageVector, desc: String, on: Boolean, badge: String?, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val t = LocalTokens.current
-    Box(Modifier.size(48.dp).clip(CircleShape).clickable(onClickLabel = desc, onClick = onClick).semantics { contentDescription = desc }, contentAlignment = Alignment.Center) {
+    Box(
+        Modifier.size(48.dp).clip(CircleShape)
+            .then(
+                if (onLongClick == null) Modifier.clickable(onClickLabel = desc, onClick = onClick)
+                else Modifier.combinedClickable(onClickLabel = desc, onLongClickLabel = "Play a random track", onLongClick = onLongClick, onClick = onClick),
+            )
+            .semantics { contentDescription = desc },
+        contentAlignment = Alignment.Center,
+    ) {
         Icon(icon, null, tint = if (on) t.accent else t.sub, modifier = Modifier.size(22.dp))
         if (on) Box(Modifier.align(Alignment.BottomCenter).padding(bottom = 5.dp).size(4.dp).clip(CircleShape).background(t.accentFill))
         if (badge != null) {

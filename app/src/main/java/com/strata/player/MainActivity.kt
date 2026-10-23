@@ -28,6 +28,20 @@ class MainActivity : ComponentActivity() {
         setContent {
             StrataRoot(model = model, onRequestPermission = ::askPermissions)
         }
+        handleIntent(intent)
+    }
+
+    override fun onNewIntent(intent: android.content.Intent) {
+        super.onNewIntent(intent)
+        handleIntent(intent)
+    }
+
+    /** The widget's cover/title opens the full player. */
+    private fun handleIntent(intent: android.content.Intent?) {
+        if (intent?.getBooleanExtra(com.strata.player.widget.StrataWidgets.EXTRA_OPEN_PLAYER, false) == true) {
+            model.sheet = null
+            model.nowOpen = true
+        }
     }
 
     override fun onStart() {

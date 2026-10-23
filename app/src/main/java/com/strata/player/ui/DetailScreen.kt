@@ -37,6 +37,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.strata.player.AppModel
 import com.strata.player.Detail
+import com.strata.player.LOST_MIN_PLAYS
 import com.strata.player.SMART_LISTS
 import com.strata.player.Sheet
 import com.strata.player.data.Album
@@ -143,6 +144,7 @@ fun DetailScreen(model: AppModel, d: Detail) {
                 item {
                     EmptyNote(
                         if (data.query != null) "Nothing matches this query yet."
+                        else if (data.playlistId == "lost") "Songs you played at least $LOST_MIN_PLAYS times, but not in the last 6 months, show up here."
                         else if (data.editable) "Nothing here yet. Tap “Add songs” to pick many at once, or long-press tracks anywhere to select them."
                         else "Nothing here yet.",
                     )
@@ -200,7 +202,7 @@ private fun build(model: AppModel, d: Detail): DetailData {
             DetailData("GENRE", d.name, Fmt.plural(ts.size, "track"), total(ts), ts)
         }
         is Detail.FolderD -> {
-            val ts = idx.tracks.filter { it.folder == d.path }.sortedWith(compareBy({ it.discNo }, { it.trackNo }, { it.fileName }))
+            val ts = idx.tracks.filter { it.folder == d.path }.sortedWith(compareBy<Track>({ it.discNo }, { it.trackNo }).then(com.strata.player.data.Natural.by { it.fileName }))
             DetailData("FOLDER", d.path.substringAfterLast('/'), d.path.substringBeforeLast('/', "").removePrefix("/storage/emulated/0"), "${Fmt.plural(ts.size, "file")} · ${total(ts)}", ts, numbered = true)
         }
         is Detail.ComposerD -> {

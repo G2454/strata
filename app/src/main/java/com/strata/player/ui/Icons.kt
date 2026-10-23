@@ -75,5 +75,9 @@ object Ic {
     val select = stroke("select", "M4 6.5h8M4 12h8M4 17.5h8", "M14.5 12.5l2.5 2.5 4.5-5", w = 1.9f)
     val playNext = stroke("playNext", "M4 6h10M4 11h7M4 16h7M14 12v7l6-3.5z")
     val listAdd = stroke("listAdd", "M4 6h11M4 11h11M4 16h7M18 13v8M14 17h8")
+    val drag = stroke("drag", "M5 9h14M5 15h14", w = 2f)
+    val memories = stroke("memories", circle(12f, 12f, 8.5f), "M12 7.5V12l-3 2", "M3.5 12H1.8M4.6 7.5L3.2 6.6")
+    val queues = stroke("queues", "M4 5h11M4 9.5h11M4 14h7", "M14 13.5v6l5-3z", "M18 5v4.5")
+    val replay = stroke("replay", "M4 12a8 8 0 1 0 2.3-5.7M4 4v4.5h4.5")
     val refresh = stroke("refresh", "M20 11a8 8 0 1 0-2.3 5.7M20 4v7h-7")
 }

@@ -125,6 +125,7 @@ fun Modifier.bleed(h: Dp): Modifier = this.layout { measurable, constraints ->
     layout(constraints.maxWidth, p.height) { p.place(-extra / 2, 0) }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun IconBtn(
     icon: ImageVector,
@@ -135,13 +136,17 @@ fun IconBtn(
     size: Dp = 44.dp,
     iconSize: Dp = 22.dp,
     background: Color = Color.Transparent,
+    onLongClick: (() -> Unit)? = null,
 ) {
     Box(
         modifier
             .size(size)
             .clip(CircleShape)
             .background(background)
-            .clickable(role = Role.Button, onClickLabel = desc, onClick = onClick)
+            .then(
+                if (onLongClick == null) Modifier.clickable(role = Role.Button, onClickLabel = desc, onClick = onClick)
+                else Modifier.combinedClickable(role = Role.Button, onClickLabel = desc, onLongClick = onLongClick, onClick = onClick),
+            )
             .semantics { contentDescription = desc },
         contentAlignment = Alignment.Center,
     ) {

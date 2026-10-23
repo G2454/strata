@@ -16,6 +16,8 @@ import androidx.palette.graphics.Palette
 import com.strata.player.audio.Engine
 import com.strata.player.data.Album
 import com.strata.player.data.LibraryIndex
+import com.strata.player.data.Natural
+import com.strata.player.data.SavedQueue
 import com.strata.player.data.artistSplitter
 import com.strata.player.data.LyricLine
 import com.strata.player.data.MediaScanner
@@ -62,6 +64,13 @@ sealed class Sheet {
     data object Speed : Sheet()
     data object OrderSheet : Sheet()
     data object Output : Sheet()
+    /** All saved queues: switch, rename, delete. */
+    data object Queues : Sheet()
+    /** Pick which queue receives these tracks. */
+    data class AddToQueue(val ids: List<Long>) : Sheet()
+    data class NewQueue(val withTracks: List<Long>) : Sheet()
+    /** Choose which folders are part of the library. */
+    data object Folders : Sheet()
 }
 
 data class SmartList(val id: String, val name: String)
@@ -71,7 +80,26 @@ val SMART_LISTS = listOf(
     SmartList("most", "Most played"),
     SmartList("recent", "Recently played"),
     SmartList("added", "Recently added"),
+    SmartList("lost", "Lost memories"),
 )
+
+/** "Lost memories": played at least this often… */
+const val LOST_MIN_PLAYS = 3
+/** …but not in this long. */
+const val LOST_AFTER_MS = 180L * 24 * 60 * 60 * 1000
+
+/** Queues made automatically when switching away from an unsaved one; the oldest go first. */
+const val MAX_AUTO_QUEUES = 5
+
+/** Folder names that hold voice notes, call recordings and system sounds rather than music. */
+fun isJunkFolderName(name: String): Boolean {
+    val l = name.lowercase().trim()
+    return l in setOf("call", "calls", "callrecord", "callrecordings", "recordings", "recorder", "sound recorder", "voice recorder", "notifications", "ringtones", "alarms", "signal") ||
+        l.startsWith("whatsapp") || l.startsWith("telegram") || l.contains("voice note") || l.contains("call record")
+}
+
+/** True when [path] is [dir] or inside it. */
+fun isUnder(path: String, dir: String): Boolean = path == dir || path.startsWith(dir.trimEnd('/') + "/")
 
 /** App-wide state holder: library, user data, settings, navigation and actions. */
 class AppModel(private val app: Application) {
@@ -121,14 +149,32 @@ class AppModel(private val app: Application) {
     private var selectionScope: List<Long> = emptyList()
     private var anchor: Long? = null
 
+    // ---------------------------------------------------------------- saved queues
+    var queues by mutableStateOf<List<SavedQueue>>(emptyList()); private set
+    /** The saved queue that is playing right now, or null for an ad-hoc queue (an album you just tapped). */
+    var activeQueueId by mutableStateOf<String?>(null); private set
+
+    /** Every folder the media scanner found (before exclusions), with its file count. */
+    var scannedFolders by mutableStateOf<Map<String, Int>>(emptyMap()); private set
+
+    /** A toast's optional button, e.g. "Undo". */
+    var toastAction by mutableStateOf<Pair<String, () -> Unit>?>(null); private set
+
     init {
         engine.lookup = { index.byId[it] }
         engine.onTrackStarted = ::countPlay
         engine.onTick = { pos ->
             store.saveSession(Session(engine.context, engine.ctxName, engine.currentId, pos))
+            snapshotActiveQueue()
         }
         engine.onMessage = ::flash
+        engine.onStateChanged = ::publishWidget
+        engine.onPositionsChanged = { store.savePositions(it) }
+        engine.installPositions(store.loadPositions())
         engine.applySettings(settings)
+        val (qs, active) = store.loadQueues()
+        queues = qs
+        activeQueueId = active?.takeIf { id -> qs.any { it.id == id } }
     }
 
     // ---------------------------------------------------------------- library
@@ -163,8 +209,18 @@ class AppModel(private val app: Application) {
         val ov = user.overrides
         val raw = rawTracks
         val splitter = settings.artistSplitter()
-        index = withContext(Dispatchers.Default) { LibraryIndex(applyOverrides(raw, ov), splitter) }
+        val excluded = settings.excludedFolders
+        val (idx, folders) = withContext(Dispatchers.Default) {
+            LibraryIndex(applyOverrides(withoutExcluded(raw, excluded), ov), splitter) to folderCounts(raw)
+        }
+        index = idx
+        scannedFolders = folders
     }
+
+    private fun folderCounts(raw: List<Track>): Map<String, Int> = raw.groupingBy { it.folder }.eachCount()
+
+    private fun withoutExcluded(raw: List<Track>, excluded: Set<String>): List<Track> =
+        if (excluded.isEmpty()) raw else raw.filter { t -> excluded.none { isUnder(t.folder, it) } }
 
     private fun rebuildIndex() {
         scope.launch { rebuildIndexNow() }
@@ -189,6 +245,12 @@ class AppModel(private val app: Application) {
     private fun restoreSession() {
         restored = true
         val s = store.loadSession()
+        val active = queues.firstOrNull { it.id == activeQueueId }
+        if (active != null && active.ids.any { index.byId.containsKey(it) }) {
+            val pos = if (s.currentId == active.currentId) s.positionMs else active.positionMs
+            engine.loadQueue(active.ids, active.index, pos, active.name, play = false)
+            return
+        }
         if (s.currentId >= 0 && index.byId.containsKey(s.currentId)) {
             val ctx = s.ctx.filter { index.byId.containsKey(it) }.ifEmpty { listOf(s.currentId) }
             engine.playContext(ctx, s.currentId, s.ctxName, s.positionMs, play = false)
@@ -229,7 +291,8 @@ class AppModel(private val app: Application) {
         restored = true
         if (techInfo.isNotEmpty()) tech = tech + techInfo
         rawTracks = tracks
-        index = LibraryIndex(tracks, settings.artistSplitter())
+        index = LibraryIndex(withoutExcluded(tracks, settings.excludedFolders), settings.artistSplitter())
+        scannedFolders = folderCounts(tracks)
         hasPermission = true
     }
 
@@ -256,7 +319,9 @@ class AppModel(private val app: Application) {
         store.saveSettings(settings)
         engine.applySettings(settings)
         if (old.ignoreShort != settings.ignoreShort) rescan()
-        else if (old.splitArtists != settings.splitArtists || old.keepTogether != settings.keepTogether) {
+        else if (old.splitArtists != settings.splitArtists || old.keepTogether != settings.keepTogether ||
+            old.excludedFolders != settings.excludedFolders
+        ) {
             if (restored || rawTracks.isNotEmpty()) rebuildIndex()
         }
     }
@@ -274,7 +339,10 @@ class AppModel(private val app: Application) {
     }
 
     fun isFav(id: Long) = id in user.favorites
-    fun toggleFav(id: Long) = updateUser { u -> u.copy(favorites = if (id in u.favorites) u.favorites - id else u.favorites + id) }
+    fun toggleFav(id: Long) {
+        updateUser { u -> u.copy(favorites = if (id in u.favorites) u.favorites - id else u.favorites + id) }
+        if (id == engine.currentId) publishWidget()
+    }
     fun rating(t: Track): Int = user.ratings[t.id] ?: 0
     fun setRating(id: Long, r: Int) = updateUser { u -> u.copy(ratings = if (r <= 0) u.ratings - id else u.ratings + (id to r)) }
     fun plays(t: Track): Int = user.plays[t.id] ?: 0
@@ -309,8 +377,8 @@ class AppModel(private val app: Application) {
     }
 
     fun sortedTracks(key: SortKey): List<Track> = when (key) {
-        SortKey.TITLE -> index.tracks.sortedBy { it.title.lowercase() }
-        SortKey.ARTIST -> index.tracks.sortedWith(compareBy({ it.artist.lowercase() }, { it.album.lowercase() }, { it.discNo }, { it.trackNo }))
+        SortKey.TITLE -> index.tracks.sortedWith(Natural.by { it.title })
+        SortKey.ARTIST -> index.tracks.sortedWith(Natural.by<Track> { it.artist }.then(Natural.by { it.album }).thenBy { it.discNo }.thenBy { it.trackNo })
         SortKey.ALBUM -> index.albumOrdered(index.tracks)
         SortKey.ADDED -> index.tracks.sortedByDescending { it.dateAddedSec }
         SortKey.PLAYS -> index.tracks.sortedByDescending { plays(it) }
@@ -328,6 +396,7 @@ class AppModel(private val app: Application) {
             "most" -> index.tracks.filter { plays(it) > 0 }.sortedByDescending { plays(it) }.take(30).map { it.id }
             "recent" -> user.history.filter { by.containsKey(it) }
             "added" -> index.tracks.sortedByDescending { it.dateAddedSec }.take(30).map { it.id }
+            "lost" -> lostMemories()
             else -> {
                 val p = user.playlists.firstOrNull { it.id == id } ?: return emptyList()
                 if (p.query != null) index.albumOrdered(search(p.query)).map { it.id } else p.ids.filter { by.containsKey(it) }
@@ -404,14 +473,220 @@ class AppModel(private val app: Application) {
     // ---------------------------------------------------------------- playback helpers
 
     fun play(ids: List<Long>, start: Long, name: String) {
+        leaveActiveQueue()
         engine.playContext(ids, start, name)
         if (tab == Tab.SEARCH) addRecentSearch(query)
     }
 
     fun shuffle(ids: List<Long>, name: String) {
         if (ids.isEmpty()) return
+        leaveActiveQueue()
         if (!settings.order.isShuffle) updateSettings { it.copy(order = com.strata.player.data.Order.SHUFFLE_TRACKS) }
         engine.playContext(ids, ids.random(), name)
+    }
+
+    /** Long-press on shuffle: play one random track from [ids], keeping the current order mode. */
+    fun playRandom(ids: List<Long>, name: String) {
+        val pick = ids.randomOrNull() ?: return
+        play(ids, pick, name)
+        track(pick)?.let { flash("Random pick: ${it.title}") }
+    }
+
+    /** Songs you played a lot, but not in the last six months. Most played first. */
+    fun lostMemories(now: Long = System.currentTimeMillis()): List<Long> {
+        val cutoff = now - LOST_AFTER_MS
+        return index.tracks.filter { t ->
+            val last = user.lastPlayed[t.id] ?: return@filter false
+            plays(t) >= LOST_MIN_PLAYS && last < cutoff
+        }.sortedWith(compareByDescending<Track> { plays(it) }.thenBy { user.lastPlayed[it.id] ?: 0L }).take(50).map { it.id }
+    }
+
+    // ---------------------------------------------------------------- saved queues
+
+    private fun commitQueues(list: List<SavedQueue>, active: String?) {
+        queues = list
+        activeQueueId = active
+        store.saveQueues(list, active)
+    }
+
+    /** Copies what the engine is playing into the active saved queue (order, track, position). */
+    fun snapshotActiveQueue() {
+        val id = activeQueueId ?: return
+        val ids = engine.timelineIds()
+        if (ids.isEmpty()) return
+        val i = engine.player.currentMediaItemIndex.coerceIn(0, ids.lastIndex)
+        commitQueues(queues.map { if (it.id == id) it.copy(ids = ids, index = i, positionMs = engine.player.currentPosition, updatedAt = System.currentTimeMillis()) else it }, id)
+    }
+
+    /** Something new starts playing: the saved queue that was active keeps its place and stops being active. */
+    private fun leaveActiveQueue() {
+        if (activeQueueId == null) return
+        snapshotActiveQueue()
+        commitQueues(queues, null)
+    }
+
+    private fun newQueueId(): String {
+        var id = "q" + System.currentTimeMillis()
+        while (queues.any { it.id == id }) id += "x"
+        return id
+    }
+
+    fun createQueue(name: String, ids: List<Long>, distinct: Boolean = true): String {
+        val id = newQueueId()
+        val clean = name.trim().ifEmpty { "Queue ${queues.count { !it.auto } + 1}" }
+        commitQueues(queues + SavedQueue(id, clean, if (distinct) ids.distinct() else ids, updatedAt = System.currentTimeMillis()), activeQueueId)
+        flash(if (ids.isEmpty()) "Created queue “$clean”" else "Queue “$clean” · ${com.strata.player.ui.Fmt.plural(ids.size, "track")}")
+        return id
+    }
+
+    /** Keeps the queue that is playing as a named queue; it stays the active one. */
+    fun saveCurrentAsQueue(name: String): String? {
+        if (engine.player.mediaItemCount == 0) return null
+        val id = createQueue(name.ifBlank { engine.ctxName }, engine.timelineIds(), distinct = false)
+        commitQueues(queues, id)
+        snapshotActiveQueue()
+        return id
+    }
+
+    /** Adds tracks to a queue; the playing one gets them after its queued tracks. */
+    fun addToSavedQueue(qid: String?, ids: List<Long>) {
+        if (ids.isEmpty()) return
+        if (qid == null || qid == activeQueueId) {
+            engine.enqueue(ids.mapNotNull { track(it) }, next = false)
+            flash("Added ${com.strata.player.ui.Fmt.plural(ids.size, "track")} to the playing queue")
+            snapshotActiveQueue()
+            return
+        }
+        val q = queues.firstOrNull { it.id == qid } ?: return
+        commitQueues(queues.map { if (it.id == qid) it.copy(ids = it.ids + ids, updatedAt = System.currentTimeMillis()) else it }, activeQueueId)
+        flash("Added ${com.strata.player.ui.Fmt.plural(ids.size, "track")} to “${q.name}”")
+    }
+
+    /** Switches playback to another saved queue, keeping the place of the one you leave. */
+    fun switchQueue(qid: String, play: Boolean = true) {
+        if (qid == activeQueueId) return
+        val target = queues.firstOrNull { it.id == qid } ?: return
+        if (target.ids.none { track(it) != null }) { flash("“${target.name}” is empty"); return }
+        var list = queues
+        if (activeQueueId != null) {
+            snapshotActiveQueue(); list = queues
+        } else if (engine.player.mediaItemCount > 0) {
+            // The ad-hoc queue becomes an automatic saved queue, so nothing is lost.
+            val ids = engine.timelineIds()
+            val auto = SavedQueue(
+                newQueueId(), engine.ctxName, ids, engine.player.currentMediaItemIndex.coerceIn(0, ids.lastIndex.coerceAtLeast(0)),
+                engine.player.currentPosition, System.currentTimeMillis(), auto = true,
+            )
+            val autos = (list.filter { it.auto } + auto).sortedByDescending { it.updatedAt }.take(MAX_AUTO_QUEUES).map { it.id }.toSet()
+            list = (list + auto).filter { !it.auto || it.id in autos }
+        }
+        engine.loadQueue(target.ids, target.index, target.positionMs, target.name, play)
+        commitQueues(list, qid)
+        flash("Playing queue “${target.name}”")
+    }
+
+    fun renameQueue(qid: String, name: String) {
+        commitQueues(queues.map { if (it.id == qid) it.copy(name = name.trim().ifEmpty { it.name }, auto = false) else it }, activeQueueId)
+    }
+
+    fun deleteQueue(qid: String) {
+        val q = queues.firstOrNull { it.id == qid } ?: return
+        commitQueues(queues.filter { it.id != qid }, activeQueueId.takeIf { it != qid })
+        flashUndo("Deleted queue “${q.name}”") { commitQueues(queues + q, activeQueueId) }
+    }
+
+    // ---------------------------------------------------------------- queue editing with undo
+
+    fun removeFromQueueWithUndo(index: Int) {
+        val removed = engine.removeForUndo(index) ?: return
+        val title = track(Engine.idOf(removed.second))?.title ?: "track"
+        flashUndo("Removed “$title”") { engine.restore(removed) }
+    }
+
+    // ---------------------------------------------------------------- folders
+
+    /** Folders that usually hold voice notes, call recordings and system sounds, not music. */
+    fun junkFolders(): List<String> {
+        val out = LinkedHashSet<String>()
+        for (f in scannedFolders.keys) {
+            val parts = f.split('/')
+            val i = parts.indexOfFirst { seg -> isJunkFolderName(seg) }
+            if (i > 0) out += parts.take(i + 1).joinToString("/")
+        }
+        // Keep only the outermost ones.
+        return out.filter { p -> out.none { it != p && isUnder(p, it) } }.sorted()
+    }
+
+    fun isFolderExcluded(path: String): Boolean = settings.excludedFolders.any { isUnder(path, it) }
+
+    fun setFolderIncluded(path: String, included: Boolean) = updateSettings { s ->
+        if (included) s.copy(excludedFolders = s.excludedFolders.filter { it != path && !isUnder(it, path) }.toSet())
+        else s.copy(excludedFolders = s.excludedFolders.filter { !isUnder(it, path) }.toSet() + path)
+    }
+
+    fun hideJunkFolders() {
+        val junk = junkFolders()
+        if (junk.isEmpty()) return
+        updateSettings { s -> s.copy(excludedFolders = s.excludedFolders + junk) }
+        val n = junk.sumOf { j -> scannedFolders.filterKeys { isUnder(it, j) }.values.sum() }
+        flash("Hid ${com.strata.player.ui.Fmt.plural(n, "file")} from ${com.strata.player.ui.Fmt.plural(junk.size, "folder")}")
+    }
+
+    // ---------------------------------------------------------------- home-screen widgets
+
+    /** Mirrors the playing track into the widgets (they also work while the app process is cold). */
+    fun publishWidget() {
+        val cur = track(engine.currentId)
+        com.strata.player.widget.StrataWidgets.publish(
+            app,
+            if (cur == null) null else com.strata.player.widget.WidgetState(
+                trackId = cur.id, title = cur.title, artist = cur.artist, album = cur.album, albumId = cur.albumId,
+                uri = cur.uri.toString(), playing = engine.playIntent, favorite = isFav(cur.id),
+            ),
+        )
+    }
+
+    /**
+     * Called by the playback service for widget buttons that start playback ("play", "Play from" tiles).
+     * Loads the library first if the app was not running. [done] gets false if nothing could play.
+     */
+    fun startFromWidget(action: String, key: String?, done: (Boolean) -> Unit) {
+        scope.launch {
+            if (!awaitLibrary()) { done(false); return@launch }
+            when (action) {
+                com.strata.player.widget.StrataWidgets.ACTION_PLAY -> {
+                    if (engine.player.mediaItemCount == 0 && !restored) restoreSession()
+                    if (engine.player.mediaItemCount == 0) shuffle(index.tracks.map { it.id }, "All tracks")
+                    else if (!engine.playIntent) engine.togglePlay()
+                }
+                com.strata.player.widget.StrataWidgets.ACTION_PLAY_FROM -> playFrom(key ?: "shuffle")
+            }
+            done(engine.player.mediaItemCount > 0)
+        }
+    }
+
+    /** One-tap starts used by the "Play from" widget. */
+    fun playFrom(key: String) {
+        when (key) {
+            "shuffle" -> shuffle(index.tracks.map { it.id }, "All tracks")
+            else -> {
+                val ids = playlistIds(key)
+                if (ids.isEmpty()) { flash("${playlistName(key)} is empty"); return }
+                play(ids, ids.first(), playlistName(key))
+            }
+        }
+    }
+
+    private suspend fun awaitLibrary(): Boolean {
+        if (!hasPermission) {
+            val perm = if (Build.VERSION.SDK_INT >= 33) android.Manifest.permission.READ_MEDIA_AUDIO else android.Manifest.permission.READ_EXTERNAL_STORAGE
+            val granted = androidx.core.content.ContextCompat.checkSelfPermission(app, perm) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            if (!granted) return false
+            onPermission(true)
+        }
+        var waited = 0
+        while ((loading || index.tracks.isEmpty()) && waited < 4000) { delay(50); waited += 50 }
+        return index.tracks.isNotEmpty()
     }
 
     fun lyrics(t: Track, onResult: (List<LyricLine>?) -> Unit) {
@@ -465,8 +740,21 @@ class AppModel(private val app: Application) {
 
     fun flash(msg: String) {
         toast = msg
+        toastAction = null
         toastJob?.cancel()
         toastJob = scope.launch { delay(2600); toast = null }
+    }
+
+    /** A toast with an Undo button that stays a little longer. */
+    fun flashUndo(msg: String, undo: () -> Unit) {
+        toast = msg
+        toastAction = "Undo" to {
+            undo()
+            toast = null
+            toastAction = null
+        }
+        toastJob?.cancel()
+        toastJob = scope.launch { delay(5000); toast = null; toastAction = null }
     }
 
     fun open(d: Detail) {

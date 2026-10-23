@@ -107,7 +107,7 @@ class LibraryIndex(val tracks: List<Track>, splitter: ArtistSplitter = ArtistSpl
     fun artistsOf(t: Track): List<String> = artistsById[t.id] ?: listOf(t.artist)
 
     val albums: List<Album> = tracks.groupBy { it.albumId }.map { (id, ts) ->
-        val sorted = ts.sortedWith(compareBy({ it.discNo }, { it.trackNo }, { it.title }))
+        val sorted = ts.sortedWith(compareBy<Track>({ it.discNo }, { it.trackNo }).then(Natural.by { it.title }))
         Album(
             id = id,
             title = sorted.first().album,
@@ -117,7 +117,7 @@ class LibraryIndex(val tracks: List<Track>, splitter: ArtistSplitter = ArtistSpl
             durationMs = sorted.sumOf { it.durationMs },
             folder = sorted.first().folder,
         )
-    }.sortedBy { it.title.lowercase() }
+    }.sortedWith(Natural.by { it.title })
 
     val albumById: Map<Long, Album> = albums.associateBy { it.id }
 
@@ -130,7 +130,7 @@ class LibraryIndex(val tracks: List<Track>, splitter: ArtistSplitter = ArtistSpl
             val name = names.getOrPut(key) { a }
             m.getOrPut(name) { ArrayList() } += t
         }
-        m.toList().sortedBy { it.first.lowercase() }
+        m.toList().sortedWith(Natural.by { it.first })
     }
 
     val tracksByArtist: Map<String, List<Track>> = artists.toMap()
@@ -138,16 +138,16 @@ class LibraryIndex(val tracks: List<Track>, splitter: ArtistSplitter = ArtistSpl
     /** Tracks of an artist page; accepts any spelling of the name. */
     fun tracksOfArtist(name: String): List<Track> =
         tracksByArtist[name] ?: artists.firstOrNull { it.first.equals(name, ignoreCase = true) }?.second ?: emptyList()
-    val genres: List<Pair<String, List<Track>>> = tracks.groupBy { it.genre }.toList().sortedBy { it.first.lowercase() }
-    val folders: List<Pair<String, List<Track>>> = tracks.groupBy { it.folder }.toList().sortedBy { it.first.lowercase() }
-    val composers: List<Pair<String, List<Track>>> = tracks.groupBy { it.composer }.toList().sortedBy { it.first.lowercase() }
+    val genres: List<Pair<String, List<Track>>> = tracks.groupBy { it.genre }.toList().sortedWith(Natural.by { it.first })
+    val folders: List<Pair<String, List<Track>>> = tracks.groupBy { it.folder }.toList().sortedWith(Natural.by { it.first })
+    val composers: List<Pair<String, List<Track>>> = tracks.groupBy { it.composer }.toList().sortedWith(Natural.by { it.first })
 
     val totalDurationMs: Long = tracks.sumOf { it.durationMs }
     val totalBytes: Long = tracks.sumOf { it.sizeBytes }
 
     /** Track order inside an album, then album, then disc. */
     fun albumOrdered(ts: List<Track>): List<Track> =
-        ts.sortedWith(compareBy({ it.album.lowercase() }, { it.albumId }, { it.discNo }, { it.trackNo }))
+        ts.sortedWith(Natural.by<Track> { it.album }.thenBy { it.albumId }.thenBy { it.discNo }.thenBy { it.trackNo })
 
     private fun albumArtistOf(ts: List<Track>): String {
         val aa = ts.map { it.albumArtist }.distinct()

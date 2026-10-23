@@ -1,3 +1,7 @@
 <resources>
     <string name="app_name">Strata</string>
+    <string name="widget_player_name">Strata · Now playing</string>
+    <string name="widget_player_desc">Cover and controls. Resize it from a slim strip to a full player.</string>
+    <string name="widget_playfrom_name">Strata · Play from</string>
+    <string name="widget_playfrom_desc">Start shuffle all, favorites, recently added or most played with one tap.</string>
 </resources>

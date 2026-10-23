@@ -276,11 +276,29 @@ fun SettingsScreen(model: AppModel) {
                     s.splitArtists, { v -> model.updateSettings { it.copy(splitArtists = v) } }, topLine = true,
                 )
                 if (s.splitArtists) KeepTogetherField(model)
+                Divider()
+                Row(
+                    Modifier.fillMaxWidth().clickable { model.sheet = com.strata.player.Sheet.Folders }.padding(16.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Folders", style = Type.body(15, FontWeight.Medium), color = t.text)
+                        val n = s.excludedFolders.size
+                        Text(
+                            if (n == 0) "All folders included · hide WhatsApp audio and recordings here" else "${Fmt.plural(n, "folder")} left out",
+                            style = Type.body(12), color = t.sub,
+                        )
+                    }
+                    Icon(Ic.chevronRight, null, tint = t.faint, modifier = Modifier.size(18.dp))
+                }
             }
 
             SectionLabel("Playback", Modifier.padding(top = 14.dp))
             CardBox {
                 SwitchRow("Pause on disconnect", "Pause when headphones are unplugged or Bluetooth drops", s.pauseOnDisconnect, { v -> model.updateSettings { it.copy(pauseOnDisconnect = v) } })
+                SwitchRow("Resume on headphones", "Start playing when wired or USB headphones are plugged in", s.resumeOnWired, { v -> model.updateSettings { it.copy(resumeOnWired = v) } }, topLine = true)
+                SwitchRow("Resume on Bluetooth", "Start playing when a Bluetooth speaker, car or earbuds connect", s.resumeOnBluetooth, { v -> model.updateSettings { it.copy(resumeOnBluetooth = v) } }, topLine = true)
+                SwitchRow("Remember position in long files", "Mixes and audiobooks over 10 minutes continue where you stopped", s.rememberLongPositions, { v -> model.updateSettings { it.copy(rememberLongPositions = v) } }, topLine = true)
             }
 
             SectionLabel("About", Modifier.padding(top = 14.dp))

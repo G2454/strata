@@ -48,7 +48,8 @@ The APK lands in `app/build/outputs/apk/release/`. Every build runs the unit and
 
 **Library** — Tracks, Albums, Artists, Genres, Folders and Composers tabs. Sort by title, artist, album, date added, plays or length.
 Comfortable rows or a dense column view (#, title, format, time). Format badges read from the files (e.g. `FLAC 24/96`, `MP3 320`).
-Files shorter than 30 seconds can be ignored.
+Files shorter than 30 seconds can be ignored, and any folder can be left out
+(one tap hides WhatsApp voice notes and call recordings). Lists use natural sorting ("Track 2" before "Track 10").
 
 **Artists** — tracks credited to several artists ("A feat. B", "A & B", "Song (feat. B)") appear on every artist's page.
 Band names like Simon & Garfunkel or AC/DC stay together, and you can add your own "never split" names in Settings.
@@ -56,7 +57,8 @@ Band names like Simon & Garfunkel or AC/DC stay together, and you can add your o
 **Multi-select** — long-press a track to start selecting, tap to add more, long-press again to select a range.
 Then play, play next, add to the queue, add to a playlist, or remove from the current playlist.
 
-**Playlists** — Favorites, Most played, Recently played and Recently added; your own playlists (reorder, remove, rename, delete);
+**Playlists** — Favorites, Most played, Recently played, Recently added and Lost memories
+(songs you played a lot, but not in the last six months); your own playlists (reorder, remove, rename, delete);
 auto playlists that fill themselves from a search query. A new playlist opens a song picker with a filter and "select all shown",
 and album/artist pages can add all their tracks at once.
 
@@ -64,10 +66,27 @@ and album/artist pages can add all their tracks at once.
 (spectrum, oscilloscope, peak meter) and a technical info panel. The seek bar is a waveform decoded from the file.
 Album art colors tint the app.
 
-**Playback** — playback orders: Default, Repeat playlist, Repeat track, Random, Shuffle tracks, Shuffle albums, Shuffle folders.
-A playback queue that plays before the rest of the list, gapless playback, sleep timer (minutes or end of track),
-speed 0.5–2× with keep-pitch, skip silence, fade between tracks, pause on headphone disconnect, preferred output device,
+**Playback** — playback orders: Default, Repeat playlist, Repeat track, Random, Shuffle tracks, Shuffle albums, Shuffle folders
+(long-press shuffle plays one random track). A playback queue that plays before the rest of the list, gapless playback,
+speed 0.5–2× with keep-pitch, skip silence, fade between tracks, preferred output device,
 background playback with notification, lock-screen and Bluetooth controls.
+Pauses when headphones disconnect and resumes when they connect again (Bluetooth resume is opt-in).
+Files longer than 10 minutes (mixes, audiobooks) remember where you stopped.
+
+**Gestures** — swipe the mini player or the cover left/right to skip; swipe the mini player up to open the player,
+the cover up to open the queue; double-tap the right/left half of the cover to jump 30 seconds forward/back.
+Star rating right on the player screen.
+
+**Queue** — drag the handle to reorder, swipe right to play next, swipe left to remove (with Undo),
+"Jump to current", and save the queue as a playlist.
+**Several queues** can be kept at once: build tonight's queue while another one plays, switch between them,
+and each one keeps its own track and position.
+
+**Sleep timer** — minutes, end of the current track, or after 2/3/5 songs. It fades out instead of cutting off,
+and "Add 15 minutes" extends a running timer.
+
+**Widgets** — "Now playing" (resizes from a slim strip to a full player with cover and controls)
+and "Play from" (one-tap shuffle all, favorites, recently added, most played).
 
 **Sound** — 10-band EQ with presets and preamp, ReplayGain (track / album / smart, preamps, clipping prevention) read from your tags,
 stereo widening, mono downmix, balance, limiter, and a reorderable DSP chain.
@@ -84,7 +103,7 @@ stereo widening, mono downmix, balance, limiter, and a reorderable DSP chain.
 - **ReplayGain** is read from existing tags; the app doesn't scan loudness.
 - **Fade** fades out and in at track changes; it is not an overlapping crossfade.
 - No converter and no bit-perfect USB output.
-- No home-screen widget, Android Auto, backup/restore or playlist import/export yet.
+- No Android Auto, backup/restore or playlist import/export yet.
 - Builds are signed with a debug key, so an update may require uninstalling the previous version (which deletes playlists and play counts).
 
 ## Project layout
@@ -95,11 +114,14 @@ app/src/main/java/com/strata/player/
   audio/Engine.kt           ExoPlayer, playback orders, queue, sleep timer, fades
   audio/Dsp.kt              EQ, ReplayGain, widening, limiter, FFT analyzer
   audio/PlaybackService.kt  background playback + media notification
-  data/                     MediaStore scan, tag/LRC parsers, artist splitting, query language, JSON storage
-  ui/                       Compose screens
+  data/                     MediaStore scan, tag/LRC parsers, artist splitting, natural sort, query language, JSON storage
+  ui/                       Compose screens (QueueSheets.kt: queue, saved queues, sleep timer, folders)
+  widget/StrataWidgets.kt   home-screen widgets
 app/src/test/java/com/strata/player/
   CoreLogicTest.kt, ArtistSplitTest.kt         parser, DSP and artist-splitting checks
-  UiTest.kt, ArtistsAndSelectionUiTest.kt      Robolectric tests that tap through the real UI
+  QolLogicTest.kt                              queue editing, saved queues, sleep timer, folders, widgets
+  UiTest.kt, ArtistsAndSelectionUiTest.kt,
+  QolUiTest.kt                                 Robolectric tests that tap and swipe through the real UI
 ```
 
 Fonts: Bricolage Grotesque and Geist, under the SIL Open Font License (see `licenses/`).

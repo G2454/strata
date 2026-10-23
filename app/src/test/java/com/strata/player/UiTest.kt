@@ -7,6 +7,7 @@ import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.click
 import androidx.compose.ui.test.swipe
+import androidx.compose.ui.test.swipeLeft
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
@@ -339,9 +340,13 @@ class UiTest {
         idle { model.engine.addToQueue(model.track(5)!!); model.engine.addToQueue(model.track(6)!!) }
         idle { model.sheet = Sheet.Queue }
         node(hasText("Blue Hour Waltz") and inTag("sheet")).assertExists()
-        tapDesc("Remove Blue Hour Waltz from queue", "sheet")
+        // Swipe left removes, the toast offers Undo.
+        node(hasText("Blue Hour Waltz") and inTag("sheet")).performTouchInput { swipeLeft() }
+        rule.waitForIdle()
         assertEquals(1, model.engine.queuedItemsAfterCurrent().size)
-        tapText("Clear queue", "sheet")
+        tapText("Undo", "toast")
+        assertEquals(2, model.engine.queuedItemsAfterCurrent().size)
+        tapText("Clear", "sheet")
         assertEquals(0, model.engine.queuedItemsAfterCurrent().size)
     }
 

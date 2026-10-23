@@ -151,7 +151,32 @@ data class Settings(
     val splitArtists: Boolean = true,
     /** Artist names never to split, separated by ";" or new lines. */
     val keepTogether: String = "",
+    /** Start playing again when wired / USB headphones are plugged in. */
+    val resumeOnWired: Boolean = true,
+    /** Start playing again when a Bluetooth audio device connects (off by default, like Poweramp). */
+    val resumeOnBluetooth: Boolean = false,
+    /** Remember where you stopped in files longer than 10 minutes (mixes, audiobooks). */
+    val rememberLongPositions: Boolean = true,
+    /** Folders (and everything below them) left out of the library. */
+    val excludedFolders: Set<String> = emptySet(),
 )
+
+/** A play queue kept for later, with its own position (Musicolet-style multiple queues). */
+data class SavedQueue(
+    val id: String,
+    val name: String,
+    val ids: List<Long>,
+    val index: Int = 0,
+    val positionMs: Long = 0,
+    val updatedAt: Long = 0,
+    /** Made automatically when you switch away from a queue you never saved. */
+    val auto: Boolean = false,
+) {
+    val currentId: Long? get() = ids.getOrNull(index)
+}
+
+/** Files at least this long remember their playback position. */
+const val LONG_FILE_MS = 10 * 60 * 1000L
 
 fun Settings.artistSplitter(): ArtistSplitter =
     if (!splitArtists) ArtistSplitter.DISABLED

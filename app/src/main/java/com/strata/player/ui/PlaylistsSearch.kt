@@ -69,7 +69,7 @@ fun PlaylistsScreen(model: AppModel) {
             }
         }
         item { Column {
-            val icons = mapOf("fav" to Ic.heartFill, "most" to Ic.bars, "recent" to Ic.clock, "added" to Ic.added)
+            val icons = mapOf("fav" to Ic.heartFill, "most" to Ic.bars, "recent" to Ic.clock, "added" to Ic.added, "lost" to Ic.memories)
             Column(Modifier.padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 SMART_LISTS.chunked(2).forEach { pair ->
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {

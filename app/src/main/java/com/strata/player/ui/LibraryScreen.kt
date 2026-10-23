@@ -1,7 +1,9 @@
 package com.strata.player.ui
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -97,6 +99,7 @@ fun LibraryScreen(model: AppModel) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TracksTab(model: AppModel) {
     val t = LocalTokens.current
@@ -111,7 +114,11 @@ private fun TracksTab(model: AppModel) {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
                     Modifier.height(40.dp).clip(RoundedCornerShape(20.dp)).background(t.accentFill)
-                        .clickable { model.shuffle(ids, "All tracks") }.padding(start = 12.dp, end = 16.dp),
+                        .combinedClickable(
+                            onLongClickLabel = "Play a random track",
+                            onLongClick = { model.playRandom(ids, "All tracks") },
+                        ) { model.shuffle(ids, "All tracks") }
+                        .padding(start = 12.dp, end = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(Ic.shuffle, null, tint = t.onAccent, modifier = Modifier.size(18.dp))

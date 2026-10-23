@@ -3,8 +3,11 @@
 package com.strata.player.audio
 
 import android.content.Context
+import android.media.AudioDeviceCallback
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -22,6 +25,7 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import com.strata.player.data.LONG_FILE_MS
 import com.strata.player.data.Order
 import com.strata.player.data.RgMode
 import com.strata.player.data.Settings
@@ -54,6 +58,10 @@ class Engine(
     var onTrackStarted: (Long) -> Unit = {}
     var onTick: (positionMs: Long) -> Unit = {}
     var onMessage: (String) -> Unit = {}
+    /** Track, play/pause or queue changed: refresh things outside the app (home-screen widgets). */
+    var onStateChanged: () -> Unit = {}
+    /** Remembered positions of long files changed (persist them). */
+    var onPositionsChanged: (Map<Long, Long>) -> Unit = {}
 
     var currentId by mutableLongStateOf(-1L); private set
     var isPlaying by mutableStateOf(false); private set
@@ -65,6 +73,8 @@ class Engine(
     var sleepAtMs by mutableStateOf<Long?>(null); private set
     var sleepEndOfTrack by mutableStateOf(false); private set
     var sleepChoice by mutableStateOf<Int?>(null); private set
+    /** "Stop after N songs": how many songs are left, counting the current one. */
+    var sleepTracksLeft by mutableStateOf<Int?>(null); private set
     var currentTags by mutableStateOf<TagInfo?>(null); private set
     var appliedGainDb by mutableStateOf<Float?>(null); private set
     var preferredDeviceId by mutableIntStateOf(0); private set
@@ -74,6 +84,8 @@ class Engine(
     private var nonce = 0L
     private var playingQueuedMediaId: String? = null
     private var ticker: Job? = null
+    private val positions = HashMap<Long, Long>()
+    private var devicesPrimed = false
 
     init {
         val renderers = object : DefaultRenderersFactory(app) {
@@ -110,8 +122,19 @@ class Engine(
                 ) {
                     if (currentId >= 0) onTrackStarted(currentId)
                 }
+                if (reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) countDownSleepTracks()
+                if (reason != Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT) resumeLongFile()
                 loadCurrentTags()
                 bump()
+                onStateChanged()
+            }
+
+            override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                // Leaving a long file: remember where we were, or forget it when it played to the end.
+                val oldId = idOf(oldPosition.mediaItem)
+                if (oldId < 0 || oldPosition.mediaItemIndex == newPosition.mediaItemIndex && oldPosition.mediaItem == newPosition.mediaItem) return
+                if (reason == Player.DISCONTINUITY_REASON_AUTO_TRANSITION) forgetPosition(oldId)
+                else rememberPosition(oldId, oldPosition.positionMs)
             }
 
             override fun onIsPlayingChanged(playing: Boolean) {
@@ -119,10 +142,14 @@ class Engine(
                 if (playing) startTicker()
                 if (!playing && sleepEndOfTrack && player.playbackState != Player.STATE_BUFFERING) {
                     sleepEndOfTrack = false
+                    sleepTracksLeft = null
                     player.pauseAtEndOfMediaItems = false
-                    onMessage("Sleep timer: stopped after the track")
+                    player.volume = 1f
+                    onMessage("Sleep timer: playback stopped")
                 }
+                if (!playing) rememberPosition(currentId, player.currentPosition)
                 onTick(player.currentPosition)
+                onStateChanged()
             }
 
             override fun onTimelineChanged(timeline: androidx.media3.common.Timeline, reason: Int) {
@@ -131,12 +158,42 @@ class Engine(
 
             override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
                 refreshIntent()
+                onStateChanged()
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 refreshIntent()
             }
         })
+
+        // Resume when headphones / Bluetooth connect. Android calls onAudioDevicesAdded once right away
+        // with the devices already connected; that first call is skipped.
+        try {
+            val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+            am.registerAudioDeviceCallback(object : AudioDeviceCallback() {
+                override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>) {
+                    if (!devicesPrimed) { devicesPrimed = true; return }
+                    onOutputsConnected(addedDevices.filter { it.isSink }.map { it.type })
+                }
+            }, Handler(Looper.getMainLooper()))
+        } catch (_: Exception) {
+        }
+    }
+
+    // ------------------------------------------------------------------ headphones
+
+    /** Called with the types of newly connected outputs. Resumes playback if the settings ask for it. */
+    fun onOutputsConnected(types: List<Int>) {
+        if (player.mediaItemCount == 0 || player.playWhenReady) return
+        val wired = types.any { it in WIRED_TYPES }
+        val bluetooth = types.any { it in BLUETOOTH_TYPES }
+        val go = (wired && settings.resumeOnWired) || (bluetooth && settings.resumeOnBluetooth)
+        if (!go) return
+        if (player.playbackState == Player.STATE_ENDED) player.seekTo(player.currentMediaItemIndex, 0)
+        if (player.playbackState == Player.STATE_IDLE) player.prepare()
+        player.play()
+        refreshIntent()
+        onMessage(if (bluetooth && !wired) "Bluetooth connected · playing" else "Headphones connected · playing")
     }
 
     // ------------------------------------------------------------------ settings → player/DSP
@@ -340,6 +397,77 @@ class Engine(
         queuedItemsAfterCurrent().sortedDescending().forEach { player.removeMediaItem(it) }
     }
 
+    /** Drag-to-reorder. The current track itself doesn't move. */
+    fun move(from: Int, to: Int) {
+        val n = player.mediaItemCount
+        val ci = player.currentMediaItemIndex
+        if (from !in 0 until n || to !in 0 until n || from == to || from == ci || to == ci) return
+        player.moveMediaItem(from, to)
+        bump()
+    }
+
+    /** Swipe right in the queue: this item plays right after the current one. */
+    fun moveToNext(index: Int) {
+        val ci = player.currentMediaItemIndex
+        if (index !in 0 until player.mediaItemCount || index == ci) return
+        val mi = player.getMediaItemAt(index)
+        if (mi.mediaId.startsWith("q:")) {
+            val to = if (index > ci) ci + 1 else ci
+            player.moveMediaItem(index, to)
+        } else {
+            val t = lookup(idOf(mi)) ?: return
+            player.removeMediaItem(index)
+            player.addMediaItem(player.currentMediaItemIndex + 1, item(t, true))
+        }
+        bump()
+    }
+
+    /** Removes an item and returns what is needed to undo it. */
+    fun removeForUndo(index: Int): Pair<Int, MediaItem>? {
+        if (index !in 0 until player.mediaItemCount || index == player.currentMediaItemIndex) return null
+        val mi = player.getMediaItemAt(index)
+        player.removeMediaItem(index)
+        bump()
+        return index to mi
+    }
+
+    fun restore(removed: Pair<Int, MediaItem>) {
+        player.addMediaItem(removed.first.coerceIn(0, player.mediaItemCount), removed.second)
+        bump()
+    }
+
+    /** Tracks already played in this queue, oldest first. */
+    fun history(limit: Int = 25): List<UpItem> {
+        val ci = player.currentMediaItemIndex
+        if (player.mediaItemCount == 0) return emptyList()
+        return (maxOf(0, ci - limit) until ci).map { i -> player.getMediaItemAt(i).let { UpItem(i, idOf(it), it.mediaId.startsWith("q:")) } }
+    }
+
+    /** Every track in the queue, in play order. */
+    fun timelineIds(): List<Long> = (0 until player.mediaItemCount).map { idOf(player.getMediaItemAt(it)) }.filter { it >= 0 }
+
+    /** Loads a saved queue exactly in its saved order (no reshuffle). */
+    fun loadQueue(ids: List<Long>, index: Int, positionMs: Long, name: String, play: Boolean) {
+        val valid = ids.filter { lookup(it) != null }
+        if (valid.isEmpty()) return
+        val start = ids.getOrNull(index)?.let { valid.indexOf(it) }?.takeIf { it >= 0 } ?: 0
+        context = valid
+        ctxName = name
+        playingQueuedMediaId = null
+        player.setMediaItems(valid.map { item(lookup(it)!!, false) }, start, positionMs)
+        applyRepeat()
+        player.prepare()
+        if (play) player.play()
+        bump()
+        onStateChanged()
+    }
+
+    fun seekBy(deltaMs: Long) {
+        val dur = player.duration.takeIf { it > 0 } ?: (lookup(currentId)?.durationMs ?: 0L)
+        val to = (player.currentPosition + deltaMs).coerceAtLeast(0)
+        player.seekTo(if (dur > 0) to.coerceAtMost(dur - 500).coerceAtLeast(0) else to)
+    }
+
     fun upNext(limit: Int = 40): List<UpItem> {
         val out = ArrayList<UpItem>()
         val n = player.mediaItemCount
@@ -394,18 +522,112 @@ class Engine(
     fun setSleepMinutes(min: Int?) {
         sleepAtMs = min?.let { SystemClock.elapsedRealtime() + it * 60_000L }
         sleepChoice = min
+        sleepTracksLeft = null
         if (sleepEndOfTrack) { sleepEndOfTrack = false; player.pauseAtEndOfMediaItems = false }
+        if (min == null) player.volume = 1f
         startTicker()
     }
 
     fun setSleepEndOfTrack() {
         sleepAtMs = null
         sleepChoice = null
+        sleepTracksLeft = null
         sleepEndOfTrack = true
         player.pauseAtEndOfMediaItems = true
+        startTicker()
+    }
+
+    /** Stops after [n] songs, counting the one playing now. */
+    fun setSleepAfterTracks(n: Int) {
+        if (n <= 1) { setSleepEndOfTrack(); return }
+        sleepAtMs = null
+        sleepChoice = null
+        sleepEndOfTrack = false
+        player.pauseAtEndOfMediaItems = false
+        sleepTracksLeft = n
+        startTicker()
+    }
+
+    /** "+15 min": extends a running timer, or starts one. */
+    fun addSleepMinutes(min: Int) {
+        val base = sleepAtMs ?: SystemClock.elapsedRealtime()
+        sleepAtMs = base + min * 60_000L
+        sleepChoice = null
+        sleepTracksLeft = null
+        if (sleepEndOfTrack) { sleepEndOfTrack = false; player.pauseAtEndOfMediaItems = false }
+        startTicker()
+    }
+
+    /** One song finished on its own (also called by tests). */
+    @androidx.annotation.VisibleForTesting
+    fun countDownSleepTracks() {
+        val left = sleepTracksLeft ?: return
+        val now = left - 1
+        if (now <= 1) {
+            sleepTracksLeft = null
+            sleepEndOfTrack = true
+            player.pauseAtEndOfMediaItems = true
+        } else {
+            sleepTracksLeft = now
+        }
     }
 
     fun sleepRemainingMs(): Long? = sleepAtMs?.let { (it - SystemClock.elapsedRealtime()).coerceAtLeast(0) }
+
+    /** Volume factor for the sleep fade: the last 30 s of a timer, or the last 10 s of the final track. */
+    fun sleepFade(): Float {
+        sleepRemainingMs()?.let { left -> if (left < SLEEP_FADE_MS) return left.toFloat() / SLEEP_FADE_MS }
+        if (player.pauseAtEndOfMediaItems && sleepEndOfTrack) {
+            val dur = player.duration
+            if (dur > 0) {
+                val left = dur - player.currentPosition
+                if (left in 0 until TRACK_FADE_MS) return left.toFloat() / TRACK_FADE_MS
+            }
+        }
+        return 1f
+    }
+
+    // ------------------------------------------------------------------ long files remember their position
+
+    fun installPositions(saved: Map<Long, Long>) {
+        positions.clear(); positions.putAll(saved)
+    }
+
+    fun savedPosition(id: Long): Long? = positions[id]
+
+    private fun isLong(id: Long): Boolean {
+        val t = lookup(id) ?: return false
+        return settings.rememberLongPositions && t.durationMs >= LONG_FILE_MS
+    }
+
+    private fun rememberPosition(id: Long, pos: Long) {
+        if (id < 0 || !isLong(id)) return
+        val dur = lookup(id)?.durationMs ?: return
+        if (pos < 15_000 || pos > dur - 15_000) {
+            if (positions.remove(id) != null) onPositionsChanged(positions.toMap())
+            return
+        }
+        if (positions[id] != pos) { positions[id] = pos; onPositionsChanged(positions.toMap()) }
+    }
+
+    private fun forgetPosition(id: Long) {
+        if (positions.remove(id) != null) onPositionsChanged(positions.toMap())
+    }
+
+    /** A long file that starts from the top jumps to where you left it. */
+    private fun resumeLongFile() {
+        val id = currentId
+        if (!isLong(id)) return
+        val saved = positions[id] ?: return
+        if (player.currentPosition > 2_000) return
+        player.seekTo(saved)
+        onMessage("Resuming at ${fmtTime(saved)}")
+    }
+
+    private fun fmtTime(ms: Long): String {
+        val s = ms / 1000
+        return if (s >= 3600) "%d:%02d:%02d".format(s / 3600, (s / 60) % 60, s % 60) else "%d:%02d".format(s / 60, s % 60)
+    }
 
     private fun startTicker() {
         if (ticker?.isActive == true) return
@@ -423,16 +645,24 @@ class Engine(
                     if (pos < fade) v = pos.toFloat() / fade
                     if (dur > 0 && dur - pos < fade && (player.hasNextMediaItem() || order != Order.DEFAULT)) v = minOf(v, (dur - pos).toFloat() / fade)
                     player.volume = v.coerceIn(0f, 1f)
-                } else if (player.volume != 1f) {
+                } else if (player.volume != 1f && sleepFade() >= 1f) {
                     player.volume = 1f
                 }
+                // The sleep timer fades out instead of cutting off.
+                val sf = sleepFade()
+                if (sf < 1f && playing) player.volume = minOf(player.volume, sf).coerceIn(0f, 1f)
                 val at = sleepAtMs
                 if (at != null && SystemClock.elapsedRealtime() >= at) {
                     sleepAtMs = null
+                    sleepChoice = null
                     player.pause()
+                    player.volume = 1f
                     onMessage("Sleep timer ended. Playback paused.")
                 }
-                if (++n % 50 == 0) onTick(player.currentPosition)
+                if (++n % 50 == 0) {
+                    onTick(player.currentPosition)
+                    rememberPosition(currentId, player.currentPosition)
+                }
                 if (!playing && sleepAtMs == null) break
             }
         }
@@ -482,5 +712,14 @@ class Engine(
 
     companion object {
         fun idOf(item: MediaItem?): Long = item?.mediaId?.split(':')?.getOrNull(1)?.toLongOrNull() ?: -1L
+
+        const val SLEEP_FADE_MS = 30_000L
+        const val TRACK_FADE_MS = 10_000L
+
+        val WIRED_TYPES = setOf(
+            AudioDeviceInfo.TYPE_WIRED_HEADSET, AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+            AudioDeviceInfo.TYPE_USB_HEADSET, AudioDeviceInfo.TYPE_USB_DEVICE, AudioDeviceInfo.TYPE_LINE_ANALOG,
+        )
+        val BLUETOOTH_TYPES = setOf(AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, 26 /* TYPE_BLE_HEADSET */, 27 /* TYPE_BLE_SPEAKER */)
     }
 }

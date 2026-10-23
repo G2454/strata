@@ -68,6 +68,7 @@ fun SelectionBar(model: AppModel) {
             BarAction(Ic.playNext, "Play next", on) { model.queueSelected(next = true) }
             BarAction(Ic.queue, "Queue", on) { model.queueSelected(next = false) }
             BarAction(Ic.listAdd, "Playlist", on) { model.sheet = Sheet.AddToPlaylist(model.selected) }
+            BarAction(Ic.queues, "Queues", on) { model.sheet = Sheet.AddToQueue(model.selected) }
             if (model.selectionPlaylist != null) BarAction(Ic.trash, "Remove", on) { model.removeSelectedFromPlaylist() }
         }
     }
@@ -99,7 +100,7 @@ fun TrackPicker(model: AppModel, pid: String) {
     var q by remember(pid) { mutableStateOf("") }
     var picked by remember(pid) { mutableStateOf<List<Long>>(emptyList()) }
     val all = remember(model.index) { model.sortedTracks(SortKey.TITLE) }
-    val shown = remember(q, all, model.user, model.tech) { if (q.isBlank()) all else model.search(q).sortedBy { it.title.lowercase() } }
+    val shown = remember(q, all, model.user, model.tech) { if (q.isBlank()) all else model.search(q).sortedWith(com.strata.player.data.Natural.by { it.title }) }
     val inList = playlist?.ids?.toSet() ?: emptySet()
     val addable = shown.filter { it.id !in inList }.map { it.id }
 

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Shown in the widget picker preview before real artwork is loaded: a sun over the sea, like the app's generated covers. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="96dp" android:height="96dp" android:viewportWidth="96" android:viewportHeight="96">
+    <path android:fillColor="#FF1F5D6B" android:pathData="M16,0h64a16,16 0 0 1 16,16v64a16,16 0 0 1 -16,16h-64a16,16 0 0 1 -16,-16v-64a16,16 0 0 1 16,-16z" />
+    <path android:fillColor="#FFE8A65A" android:pathData="M16,0h64a16,16 0 0 1 16,16v39.7h-96v-39.7a16,16 0 0 1 16,-16z" />
+    <path android:fillColor="#FFFCE3B0" android:pathData="M65.3,32.6m-14.4,0a14.4,14.4 0 1,1 28.8,0a14.4,14.4 0 1,1 -28.8,0" />
+</vector>

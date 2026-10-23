@@ -84,18 +84,27 @@ fun SheetHost(model: AppModel) {
                 Box(Modifier.fillMaxWidth().padding(top = 10.dp, bottom = 6.dp), contentAlignment = Alignment.Center) {
                     Box(Modifier.size(width = 36.dp, height = 4.dp).clip(RoundedCornerShape(2.dp)).background(t.line2))
                 }
-                Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 18.dp)) {
-                    when (val s = last) {
-                        is Sheet.TrackMenu -> TrackMenu(model, s)
-                        is Sheet.AddToPlaylist -> AddToPlaylist(model, s.ids)
-                        is Sheet.NewPlaylist -> NewPlaylist(model, s)
-                        is Sheet.PlaylistMenu -> PlaylistMenu(model, s.id)
-                        Sheet.Queue -> QueueSheet(model)
-                        Sheet.Sleep -> SleepSheet(model)
-                        Sheet.Speed -> SpeedSheet(model)
-                        Sheet.OrderSheet -> OrderSheet(model)
-                        Sheet.Output -> OutputSheet(model)
-                        null -> {}
+                val current = last
+                if (current is Sheet.Queue) {
+                    // The queue scrolls by itself so it can jump back to the current track.
+                    QueueSheet(model)
+                } else {
+                    Column(Modifier.verticalScroll(rememberScrollState()).padding(bottom = 18.dp)) {
+                        when (val s = current) {
+                            is Sheet.TrackMenu -> TrackMenu(model, s)
+                            is Sheet.AddToPlaylist -> AddToPlaylist(model, s.ids)
+                            is Sheet.NewPlaylist -> NewPlaylist(model, s)
+                            is Sheet.PlaylistMenu -> PlaylistMenu(model, s.id)
+                            Sheet.Sleep -> SleepSheet(model)
+                            Sheet.Speed -> SpeedSheet(model)
+                            Sheet.OrderSheet -> OrderSheet(model)
+                            Sheet.Output -> OutputSheet(model)
+                            Sheet.Queues -> QueuesSheet(model)
+                            is Sheet.AddToQueue -> AddToQueueSheet(model, s.ids)
+                            is Sheet.NewQueue -> NewQueueSheet(model, s.withTracks)
+                            Sheet.Folders -> FoldersSheet(model)
+                            Sheet.Queue, null -> {}
+                        }
                     }
                 }
             }
@@ -104,7 +113,7 @@ fun SheetHost(model: AppModel) {
 }
 
 @Composable
-private fun SheetTitle(title: String, sub: String? = null, trailing: (@Composable () -> Unit)? = null) {
+fun SheetTitle(title: String, sub: String? = null, trailing: (@Composable () -> Unit)? = null) {
     val t = LocalTokens.current
     Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 4.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
@@ -116,7 +125,7 @@ private fun SheetTitle(title: String, sub: String? = null, trailing: (@Composabl
 }
 
 @Composable
-private fun ActionRow(label: String, hint: String = "", onClick: () -> Unit) {
+fun ActionRow(label: String, hint: String = "", onClick: () -> Unit) {
     val t = LocalTokens.current
     Divider()
     Row(Modifier.fillMaxWidth().height(52.dp).clickable(onClick = onClick).padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -146,6 +155,7 @@ private fun TrackMenu(model: AppModel, s: Sheet.TrackMenu) {
     val qn = e.queuedItemsAfterCurrent().size
     ActionRow("Add to playback queue", if (qn > 0) "queue · $qn" else "") { e.addToQueue(tr); model.sheet = null; model.flash("Added to queue (${qn + 1})") }
     ActionRow("Add to playlist…", "›") { model.sheet = Sheet.AddToPlaylist(listOf(tr.id)) }
+    if (model.queues.isNotEmpty()) ActionRow("Add to another queue…", "›") { model.sheet = Sheet.AddToQueue(listOf(tr.id)) }
     ActionRow("Go to album") { model.goTo(Detail.AlbumD(tr.albumId)) }
     val artists = model.index.artistsOf(tr)
     if (artists.size <= 1) {
@@ -229,7 +239,7 @@ private fun AddToPlaylist(model: AppModel, ids: List<Long>) {
 }
 
 @Composable
-private fun Field(label: String, value: String, onChange: (String) -> Unit, mono: Boolean = false, placeholder: String = "") {
+fun Field(label: String, value: String, onChange: (String) -> Unit, mono: Boolean = false, placeholder: String = "") {
     val t = LocalTokens.current
     Column(Modifier.padding(horizontal = 16.dp, vertical = 6.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(t.surface2).padding(horizontal = 14.dp, vertical = 10.dp)) {
         Text(label.uppercase(), style = Type.label(10), color = t.faint)
@@ -304,96 +314,7 @@ private fun PlaylistMenu(model: AppModel, id: String) {
     )
 }
 
-// ------------------------------------------------------------------ queue
-
-@Composable
-private fun QueueSheet(model: AppModel) {
-    val t = LocalTokens.current
-    val e = model.engine
-    e.timelineVersion // subscribe to timeline changes
-    val cur = model.track(e.currentId)
-    val up = e.upNext()
-    val queued = up.filter { it.queued }
-    val rest = up.filter { !it.queued }
-    SheetTitle("Up next") {
-        if (queued.isNotEmpty()) Text(
-            "Clear queue", style = Type.body(13, FontWeight.SemiBold), color = t.accent,
-            modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable { e.clearQueue() }.padding(10.dp),
-        )
-    }
-    if (cur != null) {
-        Row(
-            Modifier.padding(horizontal = 12.dp).fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(t.soft).padding(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Art(cur, Modifier.size(44.dp), RoundedCornerShape(8.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text("NOW PLAYING", style = Type.label(10), color = t.accent)
-                Text(cur.title, style = Type.body(14, FontWeight.SemiBold), color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            }
-        }
-    }
-    if (queued.isNotEmpty()) {
-        SectionLabel("Playback queue · plays first", Modifier.padding(top = 8.dp))
-        queued.forEachIndexed { n, u ->
-            val tr = model.track(u.trackId) ?: return@forEachIndexed
-            Row(Modifier.fillMaxWidth().height(58.dp).clickable { e.jumpTo(u.index) }.padding(start = 20.dp, end = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${n + 1}", style = Type.mono(12), color = t.accent, modifier = Modifier.width(22.dp))
-                Art(tr, Modifier.size(40.dp), RoundedCornerShape(8.dp))
-                Spacer(Modifier.width(12.dp))
-                Column(Modifier.weight(1f)) {
-                    Text(tr.title, style = Type.body(14, FontWeight.Medium), color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    Text(tr.artist, style = Type.body(12), color = t.sub, maxLines = 1)
-                }
-                IconBtn(Ic.close, "Remove ${tr.title} from queue", { e.removeAt(u.index) }, tint = t.sub, iconSize = 18.dp)
-            }
-        }
-    }
-    SectionLabel("Next from · ${e.ctxName}", Modifier.padding(top = 8.dp))
-    if (rest.isEmpty()) {
-        Text(
-            when (model.settings.order) {
-                Order.REPEAT_TRACK -> "Repeat track is on. This track loops."
-                Order.DEFAULT -> "End of the list. Playback stops after this track."
-                else -> "Starts over from the top."
-            },
-            style = Type.body(13), color = t.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
-        )
-    }
-    rest.take(30).forEach { u ->
-        val tr = model.track(u.trackId) ?: return@forEach
-        Row(Modifier.fillMaxWidth().height(58.dp).clickable { e.jumpTo(u.index) }.padding(horizontal = 20.dp), verticalAlignment = Alignment.CenterVertically) {
-            Art(tr, Modifier.size(40.dp), RoundedCornerShape(8.dp))
-            Spacer(Modifier.width(12.dp))
-            Column(Modifier.weight(1f)) {
-                Text(tr.title, style = Type.body(14, FontWeight.Medium), color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(tr.artist, style = Type.body(12), color = t.sub, maxLines = 1)
-            }
-            Text(Fmt.time(tr.durationMs), style = Type.mono(11), color = t.faint)
-        }
-    }
-}
-
 // ------------------------------------------------------------------ small radio sheets
-
-@Composable
-private fun SleepSheet(model: AppModel) {
-    val e = model.engine
-    SheetTitle("Sleep timer", "Pause playback after a while")
-    val opts = listOf<Pair<Int?, String>>(null to "Off", 15 to "15 minutes", 30 to "30 minutes", 45 to "45 minutes", 60 to "1 hour", 90 to "1 hour 30 minutes")
-    opts.forEachIndexed { i, (min, label) ->
-        val selected = if (min == null) e.sleepAtMs == null && !e.sleepEndOfTrack else e.sleepAtMs != null && e.sleepChoice == min
-        RadioRow(label, null, selected, {
-            e.setSleepMinutes(min)
-            model.sheet = null
-            model.flash(if (min == null) "Sleep timer off" else "Pausing in $label")
-        }, topLine = i > 0)
-    }
-    RadioRow("End of current track", null, e.sleepEndOfTrack, {
-        e.setSleepEndOfTrack(); model.sheet = null; model.flash("Stops after this track")
-    }, topLine = true)
-}
 
 @Composable
 private fun SpeedSheet(model: AppModel) {
