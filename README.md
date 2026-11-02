@@ -26,6 +26,13 @@ Kotlin, Jetpack Compose, Media3/ExoPlayer.
     <td align="center"><img src="docs/screenshots/09_sound.png" width="200" alt="Sound / EQ"><br><sub>Sound / EQ</sub></td>
     <td align="center"><img src="docs/screenshots/02_albums.png" width="200" alt="Albums"><br><sub>Albums</sub></td>
     <td align="center"><img src="docs/screenshots/11_library_light.png" width="200" alt="Light theme"><br><sub>Light theme</sub></td>
+    <td align="center"><img src="docs/screenshots/12_queues.png" width="200" alt="Saved queues"><br><sub>Saved queues</sub></td>
+  </tr>
+  <tr>
+    <td align="center"><img src="docs/screenshots/13_sleep_timer.png" width="200" alt="Sleep timer"><br><sub>Sleep timer</sub></td>
+    <td align="center"><img src="docs/screenshots/14_folders.png" width="200" alt="Folders"><br><sub>Folders</sub></td>
+    <td align="center"><img src="docs/screenshots/15_lost_memories.png" width="200" alt="Lost memories"><br><sub>Lost memories</sub></td>
+    <td align="center"><img src="docs/screenshots/16_widgets.png" width="200" alt="Home-screen widgets"><br><sub>Home-screen widgets</sub></td>
   </tr>
 </table>
 
@@ -55,7 +62,7 @@ Files shorter than 30 seconds can be ignored, and any folder can be left out
 Band names like Simon & Garfunkel or AC/DC stay together, and you can add your own "never split" names in Settings.
 
 **Multi-select** — long-press a track to start selecting, tap to add more, long-press again to select a range.
-Then play, play next, add to the queue, add to a playlist, or remove from the current playlist.
+Then play, play next, add to the queue, add to a playlist or a saved queue, or remove from the current playlist.
 
 **Playlists** — Favorites, Most played, Recently played, Recently added and Lost memories
 (songs you played a lot, but not in the last six months); your own playlists (reorder, remove, rename, delete);
@@ -79,8 +86,8 @@ Star rating right on the player screen.
 
 **Queue** — drag the handle to reorder, swipe right to play next, swipe left to remove (with Undo),
 "Jump to current", and save the queue as a playlist.
-**Several queues** can be kept at once: build tonight's queue while another one plays, switch between them,
-and each one keeps its own track and position.
+**Several queues** can be kept at once: build tonight's queue while another one plays (add songs from any track menu
+or a multi-selection), switch between them, and each one keeps its own track and position.
 
 **Sleep timer** — minutes, end of the current track, or after 2/3/5 songs. It fades out instead of cutting off,
 and "Add 15 minutes" extends a running timer.
