@@ -137,6 +137,25 @@ class EfficiencyTest {
         assertEquals("unknown duration", slow, tick(dur = -1))
     }
 
+    @Test
+    fun onlyARealFlickCountsAsOne() {
+        val m = com.strata.player.ui.FlingMeter()
+        // A slow 150 px drag over ~0.9 s.
+        var x = 0f
+        for (k in 0..56) { m.add(1_000L + k * 16, x); x -= 150f / 56 }
+        assertTrue("slow: ${m.velocity()}", kotlin.math.abs(m.velocity()) < 300f)
+        // 180 px in 60 ms.
+        m.reset(); x = 0f
+        for (k in 0..4) { m.add(1_000L + k * 15, x); x -= 45f }
+        assertTrue("flick: ${m.velocity()}", m.velocity() < -2_500f)
+        // Samples with no usable timing never look like a flick.
+        m.reset()
+        for (k in 0..20) m.add(5_000L, -k * 10f)
+        assertEquals(0f, m.velocity(), 0f)
+        m.reset(); m.add(1L, 0f)
+        assertEquals(0f, m.velocity(), 0f)
+    }
+
     // ------------------------------------------------------------------ search
 
     @Test

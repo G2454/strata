@@ -48,7 +48,6 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.input.pointer.util.VelocityTracker
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
@@ -228,11 +227,11 @@ fun Modifier.trackSwipe(
     val gapPx = gap.toPx()
     val flingPx = 700.dp.toPx()
     var dx = 0f
-    val tracker = VelocityTracker()
+    val meter = FlingMeter()
     detectDragGestures(
-        onDragStart = { dx = 0f; state.dy = 0f; tracker.resetTracking() },
+        onDragStart = { dx = 0f; state.dy = 0f; meter.reset() },
         onDragEnd = {
-            val vx = tracker.calculateVelocity().x
+            val vx = meter.velocity()
             val dy = state.dy
             state.dy = 0f
             val horizontal = abs(dx) > abs(dy)
@@ -263,12 +262,47 @@ fun Modifier.trackSwipe(
         },
     ) { change, d ->
         change.consume()
-        tracker.addPosition(change.uptimeMillis, change.position)
         dx += d.x
+        meter.add(change.uptimeMillis, dx)
         state.dy += d.y
         val blocked = (dx < 0 && engine.peekNextId() == null) || (dx > 0 && engine.peekPreviousId() == null)
         val shown = if (blocked) dx * 0.25f else dx
         state.scope.launch { state.offset.snapTo(shown) }
+    }
+}
+
+/**
+ * Horizontal speed at the end of a drag, from the last 80 ms of movement. Deliberately simple: when the samples
+ * are too close together in time to tell (or there are too few), it reports 0, so only a real flick counts as one.
+ */
+internal class FlingMeter {
+    private val times = LongArray(32)
+    private val xs = FloatArray(32)
+    private var count = 0
+    private var head = 0
+
+    fun reset() { count = 0; head = 0 }
+
+    fun add(timeMillis: Long, x: Float) {
+        times[head] = timeMillis
+        xs[head] = x
+        head = (head + 1) % times.size
+        if (count < times.size) count++
+    }
+
+    /** Pixels per second; negative is leftwards. */
+    fun velocity(): Float {
+        if (count < 2) return 0f
+        val last = (head - 1 + times.size) % times.size
+        var oldest = last
+        for (k in 1 until count) {
+            val i = (last - k + times.size) % times.size
+            if (times[last] - times[i] > 80) break
+            oldest = i
+        }
+        val dt = times[last] - times[oldest]
+        if (dt < 12) return 0f
+        return (xs[last] - xs[oldest]) * 1000f / dt
     }
 }
 
