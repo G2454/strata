@@ -1,7 +1,11 @@
 package com.strata.player.ui
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -41,6 +45,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.layout
@@ -140,6 +145,7 @@ fun IconBtn(
 ) {
     Box(
         modifier
+            .pressScale()
             .size(size)
             .clip(CircleShape)
             .background(background)
@@ -389,12 +395,16 @@ fun TrackRow(
     onLongClick: () -> Unit = onMenu,
     selecting: Boolean = false,
     selected: Boolean = false,
+    modifier: Modifier = Modifier,
+    handle: Modifier? = null,
 ) {
     val t = LocalTokens.current
+    val bg by animateColorAsState(if (selected) t.soft else if (current && !selecting) t.soft else Color.Transparent, tween(220), label = "row")
+    val titleColor by animateColorAsState(if (current) t.accent else t.text, tween(220), label = "rowTitle")
     Row(
-        Modifier
+        modifier
             .fillMaxWidth()
-            .background(if (selected) t.soft else if (current && !selecting) t.soft else Color.Transparent)
+            .background(bg)
             .combinedClickable(onClick = onClick, onLongClick = onLongClick, onLongClickLabel = "Select")
             .semantics { if (selecting) this.selected = selected }
             .height(if (columns) 52.dp else 66.dp)
@@ -409,7 +419,7 @@ fun TrackRow(
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                track.title, style = Type.body(if (columns) 14 else 15, FontWeight.Medium), color = if (current) t.accent else t.text,
+                track.title, style = Type.body(if (columns) 14 else 15, FontWeight.Medium), color = titleColor,
                 maxLines = 1, overflow = TextOverflow.Ellipsis,
             )
             Text(subtitle, style = Type.body(if (columns) 12 else 13), color = t.sub, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -427,6 +437,12 @@ fun TrackRow(
             Box(Modifier.size(44.dp), contentAlignment = Alignment.Center) { CheckDot(selected) }
         } else {
             IconBtn(Ic.more, "More options for ${track.title}", onMenu, tint = t.sub, iconSize = 20.dp)
+            if (handle != null) {
+                Box(
+                    handle.size(44.dp).semantics { contentDescription = "Reorder ${track.title}" },
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Ic.drag, null, tint = t.faint, modifier = Modifier.size(20.dp)) }
+            }
         }
     }
     if (columns) Divider()
@@ -436,13 +452,19 @@ fun TrackRow(
 @Composable
 fun CheckDot(on: Boolean, enabled: Boolean = true) {
     val t = LocalTokens.current
+    val fill by animateColorAsState(if (on) (if (enabled) t.accentFill else t.line2) else Color.Transparent, tween(160), label = "dot")
+    val ring by animateColorAsState(if (on) Color.Transparent else t.line2, tween(160), label = "ring")
+    val tick by animateFloatAsState(if (on) 1f else 0f, spring(dampingRatio = 0.45f, stiffness = Spring.StiffnessMedium), label = "tick")
     Box(
-        Modifier.size(24.dp).clip(CircleShape)
-            .background(if (on) (if (enabled) t.accentFill else t.line2) else Color.Transparent)
-            .border(2.dp, if (on) Color.Transparent else t.line2, CircleShape),
+        Modifier.size(24.dp).clip(CircleShape).background(fill).border(2.dp, ring, CircleShape),
         contentAlignment = Alignment.Center,
     ) {
-        if (on) Icon(Ic.check, null, tint = if (enabled) t.onAccent else t.sub, modifier = Modifier.size(15.dp))
+        if (tick > 0.01f) {
+            Icon(
+                Ic.check, null, tint = if (enabled) t.onAccent else t.sub,
+                modifier = Modifier.size(15.dp).graphicsLayer { scaleX = tick; scaleY = tick; alpha = tick.coerceIn(0f, 1f) },
+            )
+        }
     }
 }
 
@@ -472,6 +494,7 @@ fun BigButton(label: String, icon: ImageVector?, primary: Boolean, onClick: () -
     val t = LocalTokens.current
     Row(
         modifier
+            .pressScale(0.95f)
             .height(50.dp)
             .clip(RoundedCornerShape(25.dp))
             .background(if (primary) t.accentFill else t.surface2)

@@ -13,6 +13,12 @@ import java.io.File
 /** Persists user data, settings, last session and the tech-info cache as small JSON files. */
 class UserStore(context: Context, private val scope: CoroutineScope) {
 
+    companion object {
+        /** Bump when the library snapshot layout changes; an old snapshot is then ignored. */
+        const val LIBRARY_VERSION = 1
+        const val BACKUP_FORMAT = "strata-backup"
+    }
+
     private val dir = File(context.filesDir, "strata").apply { mkdirs() }
     private val jobs = HashMap<String, Job>()
 
@@ -21,7 +27,12 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
     )
 
     fun loadSettings(): Settings = readJson("settings.json")?.let(::settingsFrom) ?: Settings()
-    fun loadSession(): Session = readJson("session.json")?.let(::sessionFrom) ?: Session()
+    /** The list being played (session.json, written when it changes) plus where in it (now.json, tiny, written often). */
+    fun loadSession(): Session {
+        val base = readJson("session.json")?.let(::sessionFrom) ?: Session()
+        val now = readJson("now.json") ?: return base
+        return base.copy(currentId = now.optLong("currentId", base.currentId), positionMs = now.optLong("positionMs", base.positionMs))
+    }
     fun loadTech(): Map<Long, Tech> = readJson("tech.json")?.let { o ->
         val m = HashMap<Long, Tech>()
         o.keys().forEach { k ->
@@ -33,13 +44,34 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
 
     fun saveUser(u: UserData) = saveLater("user.json") { userTo(u) }
     fun saveSettings(s: Settings) = saveLater("settings.json") { settingsTo(s) }
-    fun saveSession(s: Session) = saveLater("session.json", 1500) { sessionTo(s) }
+    private var savedCtx: List<Long>? = null
+    private var savedCtxName: String? = null
+
+    /**
+     * Saves where playback is. The play list itself (possibly thousands of ids) is only rewritten when it
+     * changes; the current track and position go to a few-byte file.
+     */
+    @Synchronized
+    fun saveSession(s: Session) {
+        if (s.ctx !== savedCtx || s.ctxName != savedCtxName) {
+            savedCtx = s.ctx
+            savedCtxName = s.ctxName
+            saveLater("session.json", 1500) { sessionTo(s) }
+        }
+        saveLater("now.json", 500) { JSONObject().put("currentId", s.currentId).put("positionMs", s.positionMs) }
+    }
+
+    /** How many times [saveLater] actually wrote each file (for tests). */
+    @androidx.annotation.VisibleForTesting
+    val writes = java.util.concurrent.ConcurrentHashMap<String, Int>()
     fun saveTech(t: Map<Long, Tech>) = saveLater("tech.json", 3000) {
         JSONObject().apply { t.forEach { (k, v) -> put(k.toString(), JSONArray(listOf(v.sampleRate, v.bits, v.channels))) } }
     }
 
     /** Saved queues plus which one is playing. */
-    fun loadQueues(): Pair<List<SavedQueue>, String?> = readJson("queues.json")?.let { o ->
+    fun loadQueues(): Pair<List<SavedQueue>, String?> = readJson("queues.json")?.let(::queuesFrom) ?: (emptyList<SavedQueue>() to null)
+
+    private fun queuesFrom(o: JSONObject): Pair<List<SavedQueue>, String?> {
         val a = o.optJSONArray("queues") ?: JSONArray()
         val list = List(a.length()) {
             val q = a.getJSONObject(it)
@@ -49,21 +81,60 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
                 auto = q.optBoolean("auto", false),
             )
         }
-        list to (if (o.has("active")) o.getString("active") else null)
-    } ?: (emptyList<SavedQueue>() to null)
+        return list to (if (o.has("active")) o.getString("active") else null)
+    }
 
-    fun saveQueues(queues: List<SavedQueue>, active: String?) = saveLater("queues.json") {
-        JSONObject().apply {
-            put("queues", JSONArray().apply {
-                queues.forEach { q ->
-                    put(JSONObject().apply {
-                        put("id", q.id); put("name", q.name); put("ids", JSONArray(q.ids)); put("index", q.index)
-                        put("positionMs", q.positionMs); put("updatedAt", q.updatedAt); put("auto", q.auto)
-                    })
+    private fun queuesTo(queues: List<SavedQueue>, active: String?) = JSONObject().apply {
+        put("queues", JSONArray().apply {
+            queues.forEach { q ->
+                put(JSONObject().apply {
+                    put("id", q.id); put("name", q.name); put("ids", JSONArray(q.ids)); put("index", q.index)
+                    put("positionMs", q.positionMs); put("updatedAt", q.updatedAt); put("auto", q.auto)
+                })
+            }
+        })
+        if (active != null) put("active", active)
+    }
+
+    fun saveQueues(queues: List<SavedQueue>, active: String?) = saveLater("queues.json") { queuesTo(queues, active) }
+
+    // ------------------------------------------------------------------ backup file
+
+    /** Everything worth keeping, as one JSON text: what Settings → "Export a backup" saves. */
+    fun backupToJson(b: Backup): String = JSONObject().apply {
+        put("format", BACKUP_FORMAT); put("version", 1); put("createdAt", b.createdAt)
+        put("user", userTo(b.user))
+        put("settings", settingsTo(b.settings))
+        put("queues", queuesTo(b.queues, null))
+        put("positions", JSONObject().apply { b.positions.forEach { (k, v) -> put(k.toString(), v) } })
+        // Track ids are only stable on one phone, so each one also carries what identifies the file elsewhere.
+        put("tracks", JSONObject().apply {
+            b.tracks.forEach { (id, r) -> put(id.toString(), JSONArray(listOf(r.path, r.title, r.artist, r.album, r.durationMs))) }
+        })
+    }.toString()
+
+    /** Reads a backup file; null when it isn't one. */
+    fun backupFromJson(text: String): Backup? = try {
+        val o = JSONObject(text)
+        if (o.optString("format") != BACKUP_FORMAT) null else {
+            val refs = HashMap<Long, TrackRef>()
+            o.optJSONObject("tracks")?.let { t ->
+                t.keys().forEach { k ->
+                    val a = t.getJSONArray(k)
+                    refs[k.toLong()] = TrackRef(a.getString(0), a.getString(1), a.getString(2), a.getString(3), a.optLong(4))
                 }
-            })
-            if (active != null) put("active", active)
+            }
+            Backup(
+                user = userFrom(o.getJSONObject("user")),
+                settings = o.optJSONObject("settings")?.let(::settingsFrom) ?: Settings(),
+                queues = o.optJSONObject("queues")?.let { queuesFrom(it).first } ?: emptyList(),
+                positions = longMap(o.optJSONObject("positions")),
+                tracks = refs,
+                createdAt = o.optLong("createdAt"),
+            )
         }
+    } catch (_: Exception) {
+        null
     }
 
     /** Remembered positions of long files, by track id. */
@@ -73,6 +144,60 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
     }
 
     fun waveFile(id: Long): File = File(File(dir, "waves").apply { mkdirs() }, "$id.bin")
+
+    // ------------------------------------------------------------------ library snapshot
+
+    /**
+     * The last MediaStore scan, so a cold start can show the library at once while a fresh scan runs.
+     * A compact binary file: for 10,000 tracks it reads in a fraction of the time the MediaStore query takes.
+     */
+    fun saveLibrary(tracks: List<Track>) {
+        scope.launch(Dispatchers.IO) {
+            try {
+                val tmp = File(dir, "library.bin.tmp")
+                java.io.DataOutputStream(java.io.BufferedOutputStream(tmp.outputStream(), 64 * 1024)).use { o ->
+                    o.writeInt(LIBRARY_VERSION)
+                    o.writeInt(tracks.size)
+                    for (t in tracks) {
+                        o.writeLong(t.id); o.writeUTF(t.title); o.writeUTF(t.artist); o.writeUTF(t.album); o.writeLong(t.albumId)
+                        o.writeUTF(t.albumArtist); o.writeUTF(t.genre); o.writeUTF(t.composer); o.writeInt(t.year); o.writeInt(t.trackNo)
+                        o.writeInt(t.discNo); o.writeLong(t.durationMs); o.writeUTF(t.path); o.writeLong(t.sizeBytes)
+                        o.writeLong(t.dateAddedSec); o.writeUTF(t.mime); o.writeInt(t.bitrateBps)
+                    }
+                }
+                tmp.renameTo(File(dir, "library.bin"))
+                writes.merge("library.bin", 1, Int::plus)
+            } catch (_: Exception) {
+            }
+        }
+    }
+
+    /** Reads the snapshot written by [saveLibrary]; empty if there is none or it's from another version. */
+    fun loadLibrary(): List<Track> = try {
+        val f = File(dir, "library.bin")
+        if (!f.exists()) emptyList() else java.io.DataInputStream(java.io.BufferedInputStream(f.inputStream(), 64 * 1024)).use { i ->
+            if (i.readInt() != LIBRARY_VERSION) return@use emptyList()
+            val n = i.readInt()
+            if (n !in 0..1_000_000) return@use emptyList()
+            val out = ArrayList<Track>(n)
+            repeat(n) {
+                val id = i.readLong()
+                val title = i.readUTF(); val artist = i.readUTF(); val album = i.readUTF(); val albumId = i.readLong()
+                val albumArtist = i.readUTF(); val genre = i.readUTF(); val composer = i.readUTF(); val year = i.readInt()
+                val trackNo = i.readInt(); val discNo = i.readInt(); val dur = i.readLong(); val path = i.readUTF()
+                val size = i.readLong(); val added = i.readLong(); val mime = i.readUTF(); val bitrate = i.readInt()
+                out += Track(
+                    id = id, uri = MediaScanner.uriOf(id), title = title, artist = artist, album = album, albumId = albumId,
+                    albumArtist = albumArtist, genre = genre, composer = composer, year = year, trackNo = trackNo, discNo = discNo,
+                    durationMs = dur, path = path, folder = path.substringBeforeLast('/', ""), sizeBytes = size,
+                    dateAddedSec = added, mime = mime, bitrateBps = bitrate,
+                )
+            }
+            out
+        }
+    } catch (_: Exception) {
+        emptyList()
+    }
 
     // ------------------------------------------------------------------
 
@@ -93,6 +218,7 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
                 val tmp = File(dir, "$name.tmp")
                 tmp.writeText(json)
                 tmp.renameTo(File(dir, name))
+                writes.merge(name, 1, Int::plus)
             } catch (_: Exception) {
             }
         }
@@ -199,6 +325,7 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
             resumeOnWired = o.optBoolean("resumeOnWired", d.resumeOnWired),
             resumeOnBluetooth = o.optBoolean("resumeOnBluetooth", d.resumeOnBluetooth),
             rememberLongPositions = o.optBoolean("rememberLongPositions", d.rememberLongPositions),
+            keepPlayingAfterClose = o.optBoolean("keepPlayingAfterClose", d.keepPlayingAfterClose),
             excludedFolders = o.optJSONArray("excludedFolders")?.let { a -> List(a.length()) { a.getString(it) }.toSet() } ?: d.excludedFolders,
         )
     }
@@ -214,6 +341,7 @@ class UserStore(context: Context, private val scope: CoroutineScope) {
         put("splitArtists", s.splitArtists); put("keepTogether", s.keepTogether)
         put("resumeOnWired", s.resumeOnWired); put("resumeOnBluetooth", s.resumeOnBluetooth)
         put("rememberLongPositions", s.rememberLongPositions); put("excludedFolders", JSONArray(s.excludedFolders.toList()))
+        put("keepPlayingAfterClose", s.keepPlayingAfterClose)
     }
 
     private fun sessionFrom(o: JSONObject) = Session(

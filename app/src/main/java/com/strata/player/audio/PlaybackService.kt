@@ -8,12 +8,18 @@ import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Bundle
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.media3.common.Player
+import androidx.media3.session.CommandButton
 import androidx.media3.session.DefaultMediaNotificationProvider
 import androidx.media3.session.MediaSession
 import androidx.media3.session.MediaSessionService
+import androidx.media3.session.SessionCommand
+import androidx.media3.session.SessionResult
+import com.google.common.util.concurrent.Futures
+import com.google.common.util.concurrent.ListenableFuture
 import com.strata.player.MainActivity
 import com.strata.player.R
 import com.strata.player.StrataApp
@@ -23,10 +29,21 @@ import com.strata.player.widget.StrataWidgets
 class PlaybackService : MediaSessionService() {
 
     private var session: MediaSession? = null
+    private var shownFav: Boolean? = null
+
+    /** The heart next to the transport buttons in the notification and on the lock screen. */
+    private fun favButton(fav: Boolean): CommandButton = CommandButton.Builder()
+        .setDisplayName(if (fav) "Remove from favorites" else "Add to favorites")
+        .setIconResId(if (fav) R.drawable.ic_w_heart_fill else R.drawable.ic_w_heart)
+        .setSessionCommand(SessionCommand(CMD_FAVORITE, Bundle.EMPTY))
+        .build()
 
     override fun onCreate() {
         super.onCreate()
         val app = application as StrataApp
+        val model = app.model
+        val fav0 = model.engine.currentId >= 0 && model.isFav(model.engine.currentId)
+        shownFav = fav0
         val open = PendingIntent.getActivity(
             this, 0,
             Intent(this, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
@@ -42,12 +59,35 @@ class PlaybackService : MediaSessionService() {
                     val commands = MediaSession.ConnectionResult.DEFAULT_PLAYER_COMMANDS.buildUpon()
                         .remove(Player.COMMAND_GET_TIMELINE)
                         .build()
+                    val sessionCommands = MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
+                        .add(SessionCommand(CMD_FAVORITE, Bundle.EMPTY))
+                        .build()
                     return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                         .setAvailablePlayerCommands(commands)
+                        .setAvailableSessionCommands(sessionCommands)
                         .build()
+                }
+
+                override fun onCustomCommand(
+                    session: MediaSession, controller: MediaSession.ControllerInfo, customCommand: SessionCommand, args: Bundle,
+                ): ListenableFuture<SessionResult> {
+                    if (customCommand.customAction == CMD_FAVORITE) {
+                        val id = model.engine.currentId
+                        if (id >= 0) model.toggleFav(id)
+                        return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+                    }
+                    return super.onCustomCommand(session, controller, customCommand, args)
                 }
             })
             .build()
+        session?.setCustomLayout(listOf(favButton(fav0)))
+        // Keep the heart in the notification in step with the app (toggled here, in the app or on a widget).
+        model.onNowPlayingChanged = { _, fav ->
+            if (fav != shownFav) {
+                shownFav = fav
+                session?.setCustomLayout(listOf(favButton(fav)))
+            }
+        }
     }
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
@@ -97,15 +137,25 @@ class PlaybackService : MediaSessionService() {
         ServiceCompat.startForeground(this, DefaultMediaNotificationProvider.DEFAULT_NOTIFICATION_ID, n, type)
     }
 
+    /** Swiping Strata away from recent apps stops the music, unless "Keep playing after closing" is on. */
     override fun onTaskRemoved(rootIntent: Intent?) {
+        val keep = (application as StrataApp).model.onAppClosed()
         val p = session?.player
-        if (p == null || !p.playWhenReady || p.mediaItemCount == 0) stopSelf()
+        if (!keep || p == null || p.mediaItemCount == 0) {
+            ServiceCompat.stopForeground(this, ServiceCompat.STOP_FOREGROUND_REMOVE)
+            stopSelf()
+        }
     }
 
     override fun onDestroy() {
         // The player is shared with the UI and outlives the service; only the session is released.
+        (application as StrataApp).model.onNowPlayingChanged = null
         session?.release()
         session = null
         super.onDestroy()
+    }
+
+    companion object {
+        const val CMD_FAVORITE = "com.strata.player.FAVORITE"
     }
 }

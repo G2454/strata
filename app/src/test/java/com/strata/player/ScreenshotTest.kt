@@ -11,13 +11,20 @@ import com.strata.player.widget.WidgetState
 import org.robolectric.Shadows.shadowOf
 import java.io.FileOutputStream
 import java.time.Duration
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.test.down
 import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.moveBy
+import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.up
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import androidx.test.core.app.ApplicationProvider
 import com.github.takahirom.roborazzi.captureRoboImage
 import com.strata.player.data.Tech
@@ -294,6 +301,56 @@ class ScreenshotTest {
         shot("15_lost_memories")
     }
 
+    /** The favorite button mid-animation: the heart pops and sparks burst out. */
+    @Test
+    fun heartBurst() {
+        playLanterns()
+        idle { model.updateUser { u -> u.copy(favorites = u.favorites - 1L) }; model.nowOpen = true }
+        rule.mainClock.autoAdvance = false
+        rule.onAllNodes(hasContentDescription("Add to favorites") and hasAnyAncestor(hasTestTag("nowplaying"))).onFirst().performClick()
+        rule.mainClock.advanceTimeBy(130)
+        rule.onRoot().captureRoboImage(File(outDir, "17_heart.png").absolutePath)
+        rule.mainClock.autoAdvance = true
+    }
+
+    /** Swiping the cover: the next track's cover is already there, sliding in. */
+    @Test
+    fun swipeToNext() {
+        playLanterns()
+        idle { model.nowOpen = true }
+        val art = rule.onNode(hasTestTag("np-art"))
+        art.performTouchInput { down(center); moveBy(Offset(-width * 0.2f, 0f)); moveBy(Offset(-width * 0.25f, 0f)) }
+        rule.waitForIdle()
+        rule.onRoot().captureRoboImage(File(outDir, "18_swipe.png").absolutePath)
+        art.performTouchInput { up() }
+        rule.waitForIdle()
+    }
+
+    /** A playlist you made: every row has a handle; here one is being dragged. */
+    @Test
+    fun playlistReorder() {
+        playLanterns()
+        val pid = model.createPlaylist("Late drive", null, ids.take(7))
+        idle { model.selectTab(Tab.PLAYLISTS); model.open(Detail.PlaylistD(pid)) }
+        clearToast()
+        val third = model.track(ids[2])!!.title
+        val handle = rule.onAllNodes(hasContentDescription("Reorder $third"), useUnmergedTree = true).onFirst()
+        handle.performTouchInput { down(center); moveBy(Offset(0f, 40f)); moveBy(Offset(0f, 60f)) }
+        rule.waitForIdle()
+        rule.onRoot().captureRoboImage(File(outDir, "19_playlist_reorder.png").absolutePath)
+        handle.performTouchInput { up() }
+        rule.waitForIdle()
+    }
+
+    /** Settings → Your data: export and restore. */
+    @Test
+    fun backupSettings() {
+        playLanterns()
+        idle { model.settingsOpen = true }
+        rule.onAllNodes(hasText("Export a backup")).onFirst().performScrollTo()
+        shot("20_backup")
+    }
+
     /** The two home-screen widgets, drawn from their real layouts on a dark home screen. */
     @Test
     @Config(qualifiers = "+night")
@@ -301,7 +358,11 @@ class ScreenshotTest {
         val ctx = ApplicationProvider.getApplicationContext<StrataApp>()
         val d = ctx.resources.displayMetrics.density
         fun px(dp: Int) = (dp * d).toInt()
-        val state = WidgetState(1, "Lanterns", "Mira Solano", "Tidal Hours", 32, "", playing = true, favorite = true)
+        val now = android.os.SystemClock.elapsedRealtime()
+        val state = WidgetState(
+            1, "Lanterns", "Mira Solano", "Tidal Hours", 32, "", playing = true, favorite = true,
+            positionMs = 102_000, durationMs = 236_000, atElapsed = now, fromTile = "fav",
+        )
         val art = StrataWidgets.generated(32, px(96))
         val board = LinearLayout(ctx).apply {
             orientation = LinearLayout.VERTICAL
@@ -311,9 +372,9 @@ class ScreenshotTest {
         fun add(v: View, hDp: Int) {
             board.addView(v, LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(hDp)).apply { bottomMargin = px(18) })
         }
-        add(StrataWidgets.buildPlayer(ctx, state, art, large = true).apply(ctx, board), 184)
-        add(StrataWidgets.buildPlayer(ctx, state, art, large = false).apply(ctx, board), 72)
-        add(StrataWidgets.buildPlayFrom(ctx).apply(ctx, board), 184)
+        add(StrataWidgets.buildPlayer(ctx, state, art, large = true, now = now).apply(ctx, board), 196)
+        add(StrataWidgets.buildPlayer(ctx, state, art, large = false, now = now).apply(ctx, board), 72)
+        add(StrataWidgets.buildPlayFrom(ctx, state).apply(ctx, board), 184)
         val w = px(393)
         board.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY), View.MeasureSpec.makeMeasureSpec(0, View.MeasureSpec.UNSPECIFIED))
         board.layout(0, 0, w, board.measuredHeight)

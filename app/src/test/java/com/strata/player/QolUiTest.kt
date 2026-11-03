@@ -9,7 +9,9 @@ import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.down
 import androidx.compose.ui.test.hasAnyAncestor
 import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasScrollToIndexAction
 import androidx.compose.ui.test.hasSetTextAction
+import androidx.compose.ui.test.performScrollToNode
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createComposeRule
@@ -26,6 +28,7 @@ import androidx.compose.ui.test.swipeRight
 import androidx.compose.ui.test.up
 import androidx.test.core.app.ApplicationProvider
 import com.strata.player.data.Order
+import com.strata.player.ui.ASYNC_SEARCH_FROM
 import com.strata.player.data.Track
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -133,6 +136,122 @@ class QolUiTest {
         art.performTouchInput { swipe(Offset(centerX, height * 0.8f), Offset(centerX, height * 0.1f), 250) }
         rule.waitForIdle()
         assertEquals("swipe up opens the queue", Sheet.Queue, model.sheet)
+    }
+
+    @Test
+    fun coverSwipesSlideToTheNeighbourAndBackAlwaysMeansPreviousTrack() {
+        playAll(2)
+        idle { model.nowOpen = true; model.npView = NpView.ART }
+        val art = rule.onNode(hasTestTag("np-art"))
+        // Mid-song, the back button would restart the track; a swipe goes to the previous one.
+        idle { e.seekTo(40_000) }
+        art.performTouchInput { swipeRight() }
+        rule.waitForIdle()
+        assertEquals(1L, e.currentId)
+
+        // First track, nothing before it: the cover springs back and nothing changes.
+        art.performTouchInput { swipeRight() }
+        rule.waitForIdle()
+        assertEquals(1L, e.currentId)
+
+        // A short, quick flick is enough to skip.
+        art.performTouchInput { swipe(Offset(width * 0.6f, centerY), Offset(width * 0.3f, centerY), 60) }
+        rule.waitForIdle()
+        assertEquals(2L, e.currentId)
+        // A slow, short drag is not.
+        art.performTouchInput { swipe(Offset(width * 0.6f, centerY), Offset(width * 0.45f, centerY), 900) }
+        rule.waitForIdle()
+        assertEquals(2L, e.currentId)
+        // Only one cover is in the semantics tree: the neighbours are decoration.
+        rule.onAllNodes(hasTestTag("np-art")).assertCountEquals(1)
+    }
+
+    @Test
+    fun heartingPopsWithoutBlockingTheState() {
+        playAll(2)
+        idle { model.nowOpen = true }
+        rule.mainClock.autoAdvance = false
+        node(hasContentDescription("Add to favorites") and inTag("nowplaying")).performClick()
+        rule.mainClock.advanceTimeBy(80)
+        assertTrue("the favorite is saved at once, while the heart is still animating", model.isFav(2))
+        rule.mainClock.advanceTimeBy(1_000)
+        rule.mainClock.autoAdvance = true
+        rule.waitForIdle()
+        node(hasContentDescription("Remove from favorites") and inTag("nowplaying")).assertExists()
+        tapDesc("Remove from favorites", "nowplaying")
+        assertFalse(model.isFav(2))
+    }
+
+    @Test
+    fun pausedVisualizerStopsDrawingFrames() {
+        playAll(2)
+        idle { e.player.pause() }
+        idle { model.nowOpen = true; model.npView = NpView.VIZ }
+        // With the clock running freely this only returns once the visualizer stops asking for frames.
+        rule.waitForIdle()
+        node(hasText("PAUSED") and inTag("nowplaying")).assertExists()
+        idle { model.npView = NpView.ART }
+    }
+
+    @Test
+    fun bigLibrariesSearchInTheBackground() {
+        val big = (1L..(ASYNC_SEARCH_FROM + 500L)).map { i ->
+            tr(1000 + i, if (i == 1234L) "Zebra Crossing" else "Song $i", "Album ${i % 50}")
+        }
+        idle { model.installLibraryForTest(big) }
+        node(hasTestTag("nav-search")).tap()
+        idle { model.query = "zebra" }
+        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Zebra Crossing")).fetchSemanticsNodes().isNotEmpty() }
+        // Typing more keeps the old results up until the new ones are ready, then replaces them.
+        idle { model.query = "zebra crossing" }
+        node(hasText("Zebra Crossing")).assertExists()
+        idle { model.query = "song 1499" }
+        rule.waitUntil(10_000) { rule.onAllNodes(hasText("Song 1499")).fetchSemanticsNodes().isNotEmpty() }
+        rule.onAllNodes(hasText("Zebra Crossing")).assertCountEquals(0)
+    }
+
+    @Test
+    fun playlistRowsReorderByDraggingTheirHandle() {
+        val pid = model.createPlaylist("Mix", null, listOf(1L, 2L, 3L, 4L, 5L))
+        idle { model.selectTab(Tab.PLAYLISTS); model.open(Detail.PlaylistD(pid)) }
+        rule.onNode(hasTestTag("detail")).assertExists()
+        // Rows are 66 dp at xxhdpi (3 px per dp). Drag Birch two rows down.
+        val rowPx = 66f * 3f
+        rule.onAllNodes(hasContentDescription("Reorder Birch") and inTag("detail"), useUnmergedTree = true).onFirst().performTouchInput {
+            down(center)
+            moveBy(Offset(0f, 30f))
+            moveBy(Offset(0f, rowPx))
+            moveBy(Offset(0f, rowPx - 30f))
+            up()
+        }
+        rule.waitForIdle()
+        assertEquals(listOf(1L, 3L, 4L, 2L, 5L), model.user.playlists.first { it.id == pid }.ids)
+        assertFalse("holding the handle doesn't start selecting", model.selecting)
+        assertEquals("…or play the track", -1L, e.currentId)
+
+        // Removing from the menu offers Undo.
+        tapDesc("More options for Cedar", "detail")
+        tapText("Remove from playlist", "sheet")
+        assertEquals(listOf(1L, 4L, 2L, 5L), model.user.playlists.first { it.id == pid }.ids)
+        tapText("Undo", "toast")
+        assertEquals(listOf(1L, 3L, 4L, 2L, 5L), model.user.playlists.first { it.id == pid }.ids)
+    }
+
+    @Test
+    fun searchSaysWhenItShowsOnlyTheFirstRows() {
+        val many = (1L..400L).map { i -> tr(2000 + i, "Song $i", "Album ${i % 20}") }
+        idle { model.installLibraryForTest(many) }
+        node(hasTestTag("nav-search")).tap()
+        idle { model.query = "song" }
+        rule.onAllNodes(hasScrollToIndexAction()).onFirst().performScrollToNode(hasTestTag("search-more"))
+        rule.onNode(hasText("Showing 300 of 400 tracks", substring = true)).assertExists()
+    }
+
+    @Test
+    fun settingsOfferBackupAndRestore() {
+        tapDesc("Settings")
+        node(hasText("Export a backup") and inTag("settings")).performScrollTo().assertExists()
+        node(hasText("Restore a backup") and inTag("settings")).assertExists()
     }
 
     @Test
@@ -280,6 +399,8 @@ class QolUiTest {
         tapText("Resume on headphones", "settings"); assertFalse(model.settings.resumeOnWired)
         tapText("Resume on Bluetooth", "settings"); assertTrue(model.settings.resumeOnBluetooth)
         tapText("Remember position in long files", "settings"); assertFalse(model.settings.rememberLongPositions)
+        assertFalse("closing the app stops the music by default", model.settings.keepPlayingAfterClose)
+        tapText("Keep playing after closing", "settings"); assertTrue(model.settings.keepPlayingAfterClose)
 
         assertTrue(model.index.byId.containsKey(8))
         tapText("Folders", "settings"); assertEquals(Sheet.Folders, model.sheet)

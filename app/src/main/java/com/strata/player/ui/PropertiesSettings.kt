@@ -41,6 +41,7 @@ import com.strata.player.AppModel
 import com.strata.player.data.TagInfo
 import com.strata.player.data.ThemeMode
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
@@ -299,13 +300,111 @@ fun SettingsScreen(model: AppModel) {
                 SwitchRow("Resume on headphones", "Start playing when wired or USB headphones are plugged in", s.resumeOnWired, { v -> model.updateSettings { it.copy(resumeOnWired = v) } }, topLine = true)
                 SwitchRow("Resume on Bluetooth", "Start playing when a Bluetooth speaker, car or earbuds connect", s.resumeOnBluetooth, { v -> model.updateSettings { it.copy(resumeOnBluetooth = v) } }, topLine = true)
                 SwitchRow("Remember position in long files", "Mixes and audiobooks over 10 minutes continue where you stopped", s.rememberLongPositions, { v -> model.updateSettings { it.copy(rememberLongPositions = v) } }, topLine = true)
+                SwitchRow("Keep playing after closing", "Off: swiping Strata away from recent apps stops the music", s.keepPlayingAfterClose, { v -> model.updateSettings { it.copy(keepPlayingAfterClose = v) } }, topLine = true)
             }
 
+            SectionLabel("Your data", Modifier.padding(top = 14.dp))
+            BackupCard(model)
+
             SectionLabel("About", Modifier.padding(top = 14.dp))
-            CardBox {
+            AboutCard(model)
+        }
+    }
+}
+
+/** One tappable line in a settings card. */
+@Composable
+private fun LinkRow(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, sub: String, onClick: () -> Unit) {
+    val t = LocalTokens.current
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = t.accent, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(title, style = Type.body(15, FontWeight.Medium), color = t.text)
+            Text(sub, style = Type.body(12), color = t.sub)
+        }
+    }
+}
+
+/** Export / restore everything worth keeping, through the system file picker (Drive, Downloads, a USB stick…). */
+@Composable
+private fun BackupCard(model: AppModel) {
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val scope = androidx.compose.runtime.rememberCoroutineScope()
+    val export = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.CreateDocument("application/json"),
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val text = model.exportBackup()
+            val ok = withContext(Dispatchers.IO) {
+                try { ctx.contentResolver.openOutputStream(uri, "wt")?.use { it.write(text.toByteArray()) } != null } catch (_: Exception) { false }
+            }
+            model.flash(if (ok) "Backup saved" else "Couldn't save the backup there")
+        }
+    }
+    val restore = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri != null) scope.launch {
+            val text = withContext(Dispatchers.IO) {
+                try { ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() } } catch (_: Exception) { null }
+            }
+            if (text == null) model.flash("Couldn't read that file") else model.importBackup(text)
+        }
+    }
+    CardBox {
+        LinkRow(Ic.up, "Export a backup", "Playlists, favorites, ratings, play history, queues and settings, in one file") {
+            val day = java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.US).format(Date())
+            export.launch("strata-backup-$day.json")
+        }
+        Divider()
+        LinkRow(Ic.down, "Restore a backup", "Songs are matched by file and tags, so it also works on a new phone") {
+            restore.launch(arrayOf("application/json", "text/plain", "application/octet-stream"))
+        }
+    }
+}
+
+/** Version (with the GitHub build number) and, after a crash, the report to copy. */
+@Composable
+private fun AboutCard(model: AppModel) {
+    val t = LocalTokens.current
+    val ctx = androidx.compose.ui.platform.LocalContext.current
+    val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val version = remember { com.strata.player.data.CrashLog.appVersion(ctx) }
+    var cleared by remember { mutableStateOf(false) }
+    val crash by produceState<String?>(null, cleared) {
+        value = if (cleared) null else withContext(Dispatchers.IO) { com.strata.player.data.CrashLog.read(ctx) }
+    }
+    CardBox {
+        Text(
+            "Strata $version · Media3 ExoPlayer engine with Strata's 32-bit float DSP. Fonts: Bricolage Grotesque and Geist (SIL Open Font License).",
+            style = Type.body(13), color = t.sub, modifier = Modifier.padding(16.dp),
+        )
+        val report = crash
+        if (report != null) {
+            Divider()
+            val time = report.lineSequence().firstOrNull { it.startsWith("Time: ") }?.removePrefix("Time: ") ?: ""
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Strata crashed", style = Type.body(15, FontWeight.Medium), color = t.text)
+                    Text("$time · copy the report to send it", style = Type.body(12), color = t.sub)
+                }
                 Text(
-                    "Strata 0.1 · Media3 ExoPlayer engine with Strata's 32-bit float DSP. Fonts: Bricolage Grotesque and Geist (SIL Open Font License).",
-                    style = Type.body(13), color = t.sub, modifier = Modifier.padding(16.dp),
+                    "Copy", style = Type.body(14, FontWeight.SemiBold), color = t.accent,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable {
+                        clipboard.setText(androidx.compose.ui.text.AnnotatedString(report))
+                        model.flash("Crash report copied")
+                    }.padding(horizontal = 12.dp, vertical = 10.dp),
+                )
+                Text(
+                    "Clear", style = Type.body(14, FontWeight.SemiBold), color = t.sub,
+                    modifier = Modifier.clip(RoundedCornerShape(10.dp)).clickable {
+                        com.strata.player.data.CrashLog.clear(ctx)
+                        cleared = true
+                    }.padding(horizontal = 12.dp, vertical = 10.dp),
                 )
             }
         }

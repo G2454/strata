@@ -1,6 +1,10 @@
 package com.strata.player.ui
 
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -43,6 +47,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
@@ -183,12 +188,19 @@ private fun ReorderableRows(model: AppModel, items: List<UpItem>, numbered: Bool
             i in target until dragging -> rowH
             else -> 0f
         }
-        val y = if (i == dragging) offset else shift
         key(u.index, u.trackId) {
+            // Rows make room for the dragged one with a short slide instead of jumping; the dragged row lifts.
+            val slide by animateFloatAsState(shift, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow), label = "make-room")
+            val lift by animateFloatAsState(if (i == dragging) 1f else 0f, tween(150), label = "lift")
+            val y = if (i == dragging) offset else slide
             QueueRow(
                 model, u, dim = false, number = if (numbered) "${i + 1}" else null,
                 onRight = { e.moveToNext(u.index) },
-                modifier = Modifier.zIndex(if (i == dragging) 1f else 0f).graphicsLayer { translationY = y },
+                modifier = Modifier.zIndex(if (i == dragging) 1f else 0f).graphicsLayer {
+                    translationY = y
+                    scaleX = 1f + 0.03f * lift; scaleY = 1f + 0.03f * lift
+                    shadowElevation = 12.dp.toPx() * lift
+                },
                 handle = Modifier.pointerInput(items, i) {
                     detectDragGestures(
                         onDragStart = { dragging = i; offset = 0f },
@@ -222,6 +234,7 @@ private fun QueueRow(
     val ox = remember { Animatable(0f) }
     val scope = rememberCoroutineScope()
     val thr = with(LocalDensity.current) { 96.dp.toPx() }
+    val view = LocalView.current
     Box(modifier.fillMaxWidth().height(ROW_H)) {
         if (ox.value > 1f) {
             Row(
@@ -253,10 +266,15 @@ private fun QueueRow(
                             val v = ox.value
                             scope.launch {
                                 when {
-                                    v > thr && onRight != null -> { onRight(); model.flash("Plays next: ${tr.title}") }
-                                    v < -thr -> model.removeFromQueueWithUndo(u.index)
+                                    v > thr && onRight != null -> { haptic(view); onRight(); model.flash("Plays next: ${tr.title}") }
+                                    v < -thr -> {
+                                        haptic(view)
+                                        // Slide the rest of the way out before the row goes.
+                                        ox.animateTo(-size.width.toFloat(), tween(140))
+                                        model.removeFromQueueWithUndo(u.index)
+                                    }
                                 }
-                                ox.animateTo(0f)
+                                ox.animateTo(0f, spring(dampingRatio = 0.75f, stiffness = Spring.StiffnessMediumLow))
                             }
                         },
                         onDragCancel = { scope.launch { ox.animateTo(0f) } },
@@ -305,8 +323,9 @@ fun SleepSheet(model: AppModel) {
     val t = LocalTokens.current
     val e = model.engine
     val at = e.sleepAtMs
-    val left by produceState(e.sleepRemainingMs() ?: 0L, at) {
-        while (at != null) { value = e.sleepRemainingMs() ?: 0L; delay(1000) }
+    val visible = model.uiVisible
+    val left by produceState(e.sleepRemainingMs() ?: 0L, at, visible) {
+        while (at != null && visible) { value = e.sleepRemainingMs() ?: 0L; delay(1000) }
     }
     val sub = when {
         at != null -> "Pausing in ${Fmt.time(left)} · fades out over the last 30 s"

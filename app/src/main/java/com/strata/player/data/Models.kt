@@ -24,8 +24,9 @@ data class Track(
     val mime: String,
     val bitrateBps: Int,
 ) {
-    val codec: String get() = codecOf(mime, path)
-    val lossless: Boolean get() = codec in LOSSLESS
+    // Worked out once per track instead of on every badge and search comparison.
+    val codec: String = codecOf(mime, path)
+    val lossless: Boolean = codec in LOSSLESS
     val fileName: String get() = path.substringAfterLast('/')
     val artUri: Uri get() = albumArtUri(albumId)
 
@@ -157,6 +158,8 @@ data class Settings(
     val resumeOnBluetooth: Boolean = false,
     /** Remember where you stopped in files longer than 10 minutes (mixes, audiobooks). */
     val rememberLongPositions: Boolean = true,
+    /** Keep playing after the app is swiped away from recent apps (off: closing the app stops the music, like most players). */
+    val keepPlayingAfterClose: Boolean = false,
     /** Folders (and everything below them) left out of the library. */
     val excludedFolders: Set<String> = emptySet(),
 )
@@ -174,6 +177,19 @@ data class SavedQueue(
 ) {
     val currentId: Long? get() = ids.getOrNull(index)
 }
+
+/** What identifies a track on another phone (or after Android renumbers its media): path first, then tags. */
+data class TrackRef(val path: String, val title: String, val artist: String, val album: String, val durationMs: Long)
+
+/** The contents of a backup file. */
+data class Backup(
+    val user: UserData,
+    val settings: Settings,
+    val queues: List<SavedQueue>,
+    val positions: Map<Long, Long>,
+    val tracks: Map<Long, TrackRef>,
+    val createdAt: Long,
+)
 
 /** Files at least this long remember their playback position. */
 const val LONG_FILE_MS = 10 * 60 * 1000L

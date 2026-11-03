@@ -65,6 +65,8 @@ fun DetailScreen(model: AppModel, d: Detail) {
     val user = model.user
     val data = remember(d, idx, user) { build(model, d) }
     val list = rememberLazyListState()
+    val drag = remember(d) { PlaylistDrag() }
+    val rowPx = with(androidx.compose.ui.platform.LocalDensity.current) { (if (model.settings.columns) 52.dp else 66.dp).toPx() }
     val scrolled by remember { derivedStateOf { list.firstVisibleItemIndex > 0 } }
 
     Column(Modifier.fillMaxSize().testTag("detail").blockTouches().background(t.bg)) {
@@ -137,8 +139,13 @@ fun DetailScreen(model: AppModel, d: Detail) {
                 } }
             }
             if (model.settings.columns && data.tracks.isNotEmpty()) item { ColumnHeader() }
-            trackItems(model, data.tracks, data.title, data.numbered, playlist = data.playlistId?.takeIf { data.editable }) { tr ->
-                model.sheet = Sheet.TrackMenu(tr.id, data.playlistId?.takeIf { data.editable })
+            val pid = data.playlistId
+            if (data.editable && pid != null && !model.selecting) {
+                reorderableTrackItems(model, data.tracks, data.title, pid, drag, rowPx) { tr -> model.sheet = Sheet.TrackMenu(tr.id, pid) }
+            } else {
+                trackItems(model, data.tracks, data.title, data.numbered, playlist = pid?.takeIf { data.editable }) { tr ->
+                    model.sheet = Sheet.TrackMenu(tr.id, pid?.takeIf { data.editable })
+                }
             }
             if (data.tracks.isEmpty()) {
                 item {

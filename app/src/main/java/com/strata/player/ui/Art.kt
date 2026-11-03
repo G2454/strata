@@ -10,7 +10,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
@@ -32,6 +35,7 @@ import coil.fetch.Fetcher
 import coil.key.Keyer
 import coil.request.ImageRequest
 import coil.request.Options
+import coil.size.Precision
 import com.strata.player.data.Track
 import com.strata.player.data.albumArtUri
 
@@ -62,7 +66,8 @@ class AudioArtFetcher(private val data: AudioArt, private val options: Options) 
         val bmp: android.graphics.Bitmap = loaded
         return DrawableResult(
             drawable = BitmapDrawable(options.context.resources, bmp),
-            isSampled = true,
+            // Smaller than asked means it's the whole picture, so the cached copy stays valid for this size.
+            isSampled = bmp.width >= data.px || bmp.height >= data.px,
             dataSource = DataSource.DISK,
         )
     }
@@ -77,18 +82,47 @@ class AudioArtFetcher(private val data: AudioArt, private val options: Options) 
     }
 }
 
-/** Album artwork with a generated geometric cover underneath for files without art. */
+/** Decoded cover size: big covers (player, album pages) or list thumbnails. */
+fun artPx(big: Boolean): Int = if (big) 900 else 240
+
+fun artKey(albumId: Long, px: Int): String = "art:$albumId:$px"
+
+/**
+ * One request per album and size. The explicit size and memory-cache key mean every place that shows a cover
+ * shares the decoded bitmap, instead of asking for a slightly different size and decoding it again.
+ */
+fun artRequest(ctx: android.content.Context, track: Track, big: Boolean): ImageRequest {
+    val px = artPx(big)
+    return ImageRequest.Builder(ctx)
+        .data(AudioArt(track.uri, track.albumId, px))
+        .size(px)
+        .precision(Precision.INEXACT)
+        .memoryCacheKey(artKey(track.albumId, px))
+        .build()
+}
+
+/**
+ * Album artwork with a generated geometric cover underneath for files without art. When the track changes,
+ * the previous cover stays up until the new one is decoded (then crossfades), so there's no placeholder flash.
+ */
 @Composable
 fun Art(track: Track?, modifier: Modifier, shape: Shape, big: Boolean = false) {
     val ctx = LocalContext.current
+    var shown by remember { mutableLongStateOf(-1L) }
     Box(modifier.clip(shape)) {
         GeneratedArt(track?.albumId ?: 0L, Modifier.fillMaxSize())
         if (track != null) {
-            val px = if (big) 900 else 240
-            val req = remember(track.albumId, px) {
-                ImageRequest.Builder(ctx).data(AudioArt(track.uri, track.albumId, px)).crossfade(true).build()
+            val prev = shown
+            val req = remember(track.albumId, big) {
+                artRequest(ctx, track, big).newBuilder()
+                    .placeholderMemoryCacheKey(if (prev >= 0 && prev != track.albumId) artKey(prev, artPx(big)) else null)
+                    .crossfade(true)
+                    .build()
             }
-            AsyncImage(model = req, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            AsyncImage(
+                model = req, contentDescription = null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize(),
+                onSuccess = { shown = track.albumId }, onError = { shown = -1L },
+            )
         }
     }
 }

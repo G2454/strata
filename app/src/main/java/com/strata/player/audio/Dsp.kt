@@ -39,6 +39,11 @@ class DspCore {
     private val b0 = DoubleArray(10); private val b1 = DoubleArray(10); private val b2 = DoubleArray(10)
     private val a1 = DoubleArray(10); private val a2 = DoubleArray(10)
     private val active = BooleanArray(10)
+    private val bandIdx = IntArray(10)
+    private val s1 = DoubleArray(10)
+    private val s2 = DoubleArray(10)
+    private val cb0 = DoubleArray(10); private val cb1 = DoubleArray(10); private val cb2 = DoubleArray(10)
+    private val ca1 = DoubleArray(10); private val ca2 = DoubleArray(10)
     private var z1 = Array(10) { DoubleArray(8) }
     private var z2 = Array(10) { DoubleArray(8) }
 
@@ -110,62 +115,52 @@ class DspCore {
         }
     }
 
-    /** Processes [frames] interleaved frames in place. */
+    /**
+     * Processes [frames] interleaved frames in place.
+     * Each stage runs over the whole buffer before the next one (instead of every stage per frame): the same math
+     * in the same order per sample, so identical output, but tight loops with the filter state in locals.
+     */
     fun process(buf: FloatArray, frames: Int) {
         refresh()
         val p = applied ?: return
         val ch = channels
-        val gainStep = 1.0 / (0.05 * sampleRate) // ~50 ms gain ramp
-        var w = tapWrite
-        for (f in 0 until frames) {
-            val base = f * ch
-            for (s in 0 until stageCount) {
-                when (stageOrder[s]) {
-                    0 -> { // ReplayGain
-                        if (gainCur != gainTarget) {
-                            gainCur += (gainTarget - gainCur).coerceIn(-gainStep, gainStep)
-                        }
-                        if (gainCur != 1.0) for (c in 0 until ch) buf[base + c] = (buf[base + c] * gainCur).toFloat()
-                    }
-                    1 -> if (p.eqOn) { // Equalizer
-                        for (c in 0 until ch) {
-                            var x = buf[base + c] * preampLin
-                            if (c < 8) {
-                                for (i in 0 until 10) {
-                                    if (!active[i]) continue
-                                    val y = b0[i] * x + z1[i][c]
-                                    z1[i][c] = b1[i] * x - a1[i] * y + z2[i][c]
-                                    z2[i][c] = b2[i] * x - a2[i] * y
-                                    x = y
-                                }
-                            }
-                            buf[base + c] = x.toFloat()
-                        }
-                    }
-                    2 -> if (p.widen && ch == 2) { // Mid/side widening
+        for (s in 0 until stageCount) {
+            when (stageOrder[s]) {
+                0 -> replayGain(buf, frames, ch)
+                1 -> if (p.eqOn) equalizer(buf, frames, ch)
+                2 -> if (p.widen && ch == 2) {
+                    val k = 1f + p.widenAmount
+                    for (f in 0 until frames) {
+                        val base = f * 2
                         val l = buf[base]; val r = buf[base + 1]
                         val m = (l + r) * 0.5f
-                        val sd = (l - r) * 0.5f * (1f + p.widenAmount)
+                        val sd = (l - r) * 0.5f * k
                         buf[base] = m + sd; buf[base + 1] = m - sd
                     }
-                    3 -> if (p.mono && ch >= 2) {
+                }
+                3 -> if (p.mono && ch >= 2) {
+                    for (f in 0 until frames) {
+                        val base = f * ch
                         val m = (buf[base] + buf[base + 1]) * 0.5f
                         buf[base] = m; buf[base + 1] = m
                     }
-                    4 -> if (p.balance != 0f && ch >= 2) {
-                        buf[base] *= (1f - p.balance).coerceAtMost(1f)
-                        buf[base + 1] *= (1f + p.balance).coerceAtMost(1f)
-                    }
-                    5 -> if (p.limiter) { // Linked peak limiter, instant attack
-                        var peak = 0f
-                        for (c in 0 until ch) { val a = abs(buf[base + c]); if (a > peak) peak = a }
-                        val need = if (peak * limGain > limCeiling) limCeiling / peak else 1.0
-                        limGain = if (need < limGain) need else limGain + (1.0 - limGain) * limRelease
-                        if (limGain < 0.9999) for (c in 0 until ch) buf[base + c] = (buf[base + c] * limGain).toFloat()
+                }
+                4 -> if (p.balance != 0f && ch >= 2) {
+                    val gl = (1f - p.balance).coerceAtMost(1f)
+                    val gr = (1f + p.balance).coerceAtMost(1f)
+                    for (f in 0 until frames) {
+                        val base = f * ch
+                        buf[base] *= gl
+                        buf[base + 1] *= gr
                     }
                 }
+                5 -> if (p.limiter) limiter(buf, frames, ch)
             }
-            // Hard clip as a last resort.
+        }
+        // Hard clip as a last resort, and feed the visualizer tap.
+        var w = tapWrite
+        for (f in 0 until frames) {
+            val base = f * ch
             for (c in 0 until ch) {
                 val v = buf[base + c]
                 if (v > 1f) buf[base + c] = 1f else if (v < -1f) buf[base + c] = -1f
@@ -176,6 +171,66 @@ class DspCore {
             if (w >= tapSize) w = 0
         }
         tapWrite = w
+    }
+
+    private fun replayGain(buf: FloatArray, frames: Int, ch: Int) {
+        if (gainCur == gainTarget && gainCur == 1.0) return
+        val gainStep = 1.0 / (0.05 * sampleRate) // ~50 ms gain ramp
+        var g = gainCur
+        val target = gainTarget
+        for (f in 0 until frames) {
+            if (g != target) g += (target - g).coerceIn(-gainStep, gainStep)
+            if (g != 1.0) {
+                val base = f * ch
+                for (c in 0 until ch) buf[base + c] = (buf[base + c] * g).toFloat()
+            }
+        }
+        gainCur = g
+    }
+
+    private fun equalizer(buf: FloatArray, frames: Int, ch: Int) {
+        // Active bands, in order.
+        var nb = 0
+        for (i in 0 until 10) if (active[i]) bandIdx[nb++] = i
+        val pre = preampLin
+        for (c in 0 until ch) {
+            if (c >= 8 || nb == 0) {
+                // No filter state for these channels (or no active band): just the preamp, as before.
+                for (f in 0 until frames) { val k = f * ch + c; buf[k] = (buf[k] * pre).toFloat() }
+                continue
+            }
+            for (j in 0 until nb) {
+                val i = bandIdx[j]
+                s1[j] = z1[i][c]; s2[j] = z2[i][c]
+                cb0[j] = b0[i]; cb1[j] = b1[i]; cb2[j] = b2[i]; ca1[j] = a1[i]; ca2[j] = a2[i]
+            }
+            for (f in 0 until frames) {
+                val k = f * ch + c
+                var x = buf[k] * pre
+                for (j in 0 until nb) {
+                    val y = cb0[j] * x + s1[j]
+                    s1[j] = cb1[j] * x - ca1[j] * y + s2[j]
+                    s2[j] = cb2[j] * x - ca2[j] * y
+                    x = y
+                }
+                buf[k] = x.toFloat()
+            }
+            for (j in 0 until nb) { val i = bandIdx[j]; z1[i][c] = s1[j]; z2[i][c] = s2[j] }
+        }
+    }
+
+    private fun limiter(buf: FloatArray, frames: Int, ch: Int) {
+        var lg = limGain
+        val rel = limRelease
+        for (f in 0 until frames) {
+            val base = f * ch
+            var peak = 0f
+            for (c in 0 until ch) { val a = abs(buf[base + c]); if (a > peak) peak = a }
+            val need = if (peak * lg > limCeiling) limCeiling / peak else 1.0
+            lg = if (need < lg) need else lg + (1.0 - lg) * rel
+            if (lg < 0.9999) for (c in 0 until ch) buf[base + c] = (buf[base + c] * lg).toFloat()
+        }
+        limGain = lg
     }
 
     companion object {
@@ -191,6 +246,9 @@ class Analyzer(private val n: Int = 2048) {
     private val im = DoubleArray(n)
     private val window = DoubleArray(n) { 0.5 - 0.5 * cos(2.0 * PI * it / (n - 1)) }
     private val smooth = FloatArray(64)
+    private var binRate = -1
+    private var binLo = IntArray(0)
+    private var binHi = IntArray(0)
 
     /**
      * Fills [bands] with 0..1 bar heights (log-spaced 30 Hz–16 kHz) and returns
@@ -220,13 +278,22 @@ class Analyzer(private val n: Int = 2048) {
         fft(re, im)
         val rate = core.tapRate.coerceAtLeast(8000)
         val count = bands.size
-        val fLo = 30.0
-        val fHi = minOf(16000.0, rate / 2.0)
+        if (rate != binRate || count != binLo.size) {
+            // Log-spaced band edges in FFT bins; only change with the sample rate.
+            binRate = rate
+            binLo = IntArray(count); binHi = IntArray(count)
+            val fLo = 30.0
+            val fHi = minOf(16000.0, rate / 2.0)
+            for (b in 0 until count) {
+                val f1 = fLo * (fHi / fLo).pow(b.toDouble() / count)
+                val f2 = fLo * (fHi / fLo).pow((b + 1).toDouble() / count)
+                binLo[b] = (f1 * n / rate).toInt().coerceIn(1, n / 2 - 1)
+                binHi[b] = (f2 * n / rate).toInt().coerceIn(binLo[b] + 1, n / 2)
+            }
+        }
         for (b in 0 until count) {
-            val f1 = fLo * (fHi / fLo).pow(b.toDouble() / count)
-            val f2 = fLo * (fHi / fLo).pow((b + 1).toDouble() / count)
-            val k1 = (f1 * n / rate).toInt().coerceIn(1, n / 2 - 1)
-            val k2 = (f2 * n / rate).toInt().coerceIn(k1 + 1, n / 2)
+            val k1 = binLo[b]
+            val k2 = binHi[b]
             var m = 0.0
             for (k in k1 until k2) {
                 val mag = re[k] * re[k] + im[k] * im[k]

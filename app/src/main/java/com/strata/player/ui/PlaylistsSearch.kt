@@ -44,6 +44,13 @@ import com.strata.player.AppModel
 import com.strata.player.Detail
 import com.strata.player.SMART_LISTS
 import com.strata.player.Sheet
+import androidx.compose.ui.platform.testTag
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.Dispatchers
+import com.strata.player.data.Track
+import com.strata.player.data.Query
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.LaunchedEffect
 
 // ====================================================================== Playlists
 
@@ -52,7 +59,7 @@ fun PlaylistsScreen(model: AppModel) {
     val t = LocalTokens.current
     val user = model.user
     val idx = model.index
-    val counts = remember(user, idx) { SMART_LISTS.associate { it.id to model.playlistIds(it.id).size } }
+    val counts = remember(user, idx) { SMART_LISTS.associate { it.id to model.smartListCount(it.id) } }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item {
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 12.dp, top = 18.dp, bottom = 14.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -85,10 +92,12 @@ fun PlaylistsScreen(model: AppModel) {
             SectionLabel("Your playlists")
         } }
         items(user.playlists, key = { it.id }) { p ->
-            val ids = remember(p, idx, user) { model.playlistIds(p.id) }
+            // A plain playlist only changes with its own edits; an auto playlist also with what its query reads.
+            val q = remember(p.query) { p.query?.let { Query.parse(it) } }
+            val ids = remember(p, idx, if (q?.usesUserData == true) user else null, if (q?.usesTech == true) model.tech else null) { model.playlistIds(p.id) }
             val ts = ids.mapNotNull { idx.byId[it] }
             Row(
-                Modifier.fillMaxWidth().heightIn(min = 76.dp).clickable { model.open(Detail.PlaylistD(p.id)) }.padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
+                Modifier.animateItem().fillMaxWidth().heightIn(min = 76.dp).clickable { model.open(Detail.PlaylistD(p.id)) }.padding(start = 20.dp, end = 8.dp, top = 10.dp, bottom = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Mosaic(ts, Modifier.size(56.dp).clip(RoundedCornerShape(12.dp)))
@@ -145,7 +154,7 @@ fun SearchScreen(model: AppModel) {
     val t = LocalTokens.current
     val q = model.query
     val idx = model.index
-    val results = remember(q, idx, model.user, model.tech) { if (q.isBlank()) emptyList() else model.search(q) }
+    val results = rememberSearch(model, q)
     val ids = remember(results) { results.map { it.id } }
     val focus = LocalFocusManager.current
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -207,8 +216,12 @@ fun SearchScreen(model: AppModel) {
                 }
             } }
         } else {
-            val artists = results.flatMap { idx.artistsOf(it) }.distinct()
-            val albums = results.map { it.albumId }.distinct()
+            // Worked out once per result set, not on every redraw (a broad query can match thousands of tracks).
+            val artists = remember(results, idx) { results.flatMap { idx.artistsOf(it) }.distinct() }
+            val albums = remember(results) { results.map { it.albumId }.distinct() }
+            val artistSamples = remember(results, artists) {
+                artists.take(12).associateWith { a -> results.first { a in idx.artistsOf(it) } }
+            }
             item { Column {
                 Text(
                     "${Fmt.plural(results.size, "track")} · ${Fmt.plural(artists.size, "artist")} · ${Fmt.plural(albums.size, "album")}",
@@ -217,7 +230,7 @@ fun SearchScreen(model: AppModel) {
                 if (artists.isNotEmpty()) {
                     HScroll(Modifier.padding(bottom = 16.dp), gap = 14.dp) {
                         artists.take(12).forEach { a ->
-                            val sample = results.first { a in idx.artistsOf(it) }
+                            val sample = artistSamples.getValue(a)
                             Column(Modifier.width(76.dp).clickable { model.open(Detail.ArtistD(a)) }, horizontalAlignment = Alignment.CenterHorizontally) {
                                 Art(sample, Modifier.size(68.dp), CircleShape)
                                 Spacer(Modifier.height(8.dp))
@@ -245,10 +258,45 @@ fun SearchScreen(model: AppModel) {
                     IconBtn(Ic.select, "Select tracks", { focus.clearFocus(); model.beginSelecting(ids) }, tint = t.sub, iconSize = 20.dp)
                 }
             }
-            items(results.take(300), key = { it.id }) { tr ->
+            items(results.take(SEARCH_ROWS), key = { it.id }) { tr ->
                 SelectableTrackRow(model, tr, ids, "Search: ${q.trim()}", false, beforePlay = { focus.clearFocus() })
+            }
+            if (results.size > SEARCH_ROWS) item {
+                // Playing or selecting from here still uses every match, not just the rows shown.
+                Text(
+                    "Showing ${SEARCH_ROWS} of ${Fmt.plural(results.size, "track")}. Narrow the search to see the rest; play or select uses all of them.",
+                    style = Type.body(13), color = t.sub, modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp).testTag("search-more"),
+                )
             }
             if (results.isEmpty()) item { EmptyNote("Nothing matches. Try a field like artist: or a comparison like plays>10.") }
         }
     }
+}
+
+/** Search shows at most this many rows (the rest are still played or selected with the rest). */
+const val SEARCH_ROWS = 300
+
+/** Libraries at least this big search in the background, so typing never waits for it. Smaller ones search instantly. */
+const val ASYNC_SEARCH_FROM = 3000
+
+/**
+ * Search results for [q]. Results are only recomputed when something they depend on changes: play counts and
+ * ratings only matter to queries like `plays>10`, the format scan only to `bits>=24`.
+ */
+@Composable
+fun rememberSearch(model: AppModel, q: String): List<Track> {
+    val idx = model.index
+    val parsed = remember(q) { Query.parse(q) }
+    val userKey = if (parsed.usesUserData) model.user else null
+    val techKey = if (parsed.usesTech) model.tech else null
+    if (idx.tracks.size < ASYNC_SEARCH_FROM) {
+        return remember(parsed, idx, userKey, techKey) { model.search(parsed, idx) }
+    }
+    // Keeps showing the previous results while the next ones are worked out.
+    val state = remember { mutableStateOf<List<Track>>(emptyList()) }
+    LaunchedEffect(parsed, idx, userKey, techKey) {
+        if (parsed.isEmpty) { state.value = emptyList(); return@LaunchedEffect }
+        state.value = withContext(Dispatchers.Default) { model.search(parsed, idx) }
+    }
+    return state.value
 }

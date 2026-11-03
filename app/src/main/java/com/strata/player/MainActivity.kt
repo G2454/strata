@@ -46,6 +46,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onStart() {
         super.onStart()
+        model.uiVisible = true
         // Binding a controller starts the session service, so playback keeps going in the background.
         val token = SessionToken(this, ComponentName(this, PlaybackService::class.java))
         controller = MediaController.Builder(this, token).buildAsync()
@@ -58,6 +59,7 @@ class MainActivity : ComponentActivity() {
     }
 
     override fun onStop() {
+        model.uiVisible = false
         controller?.let { MediaController.releaseFuture(it) }
         controller = null
         super.onStop()

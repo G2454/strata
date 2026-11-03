@@ -13,6 +13,7 @@ class StrataApp : Application(), ImageLoaderFactory {
 
     override fun onCreate() {
         super.onCreate()
+        com.strata.player.data.CrashLog.install(this)
         model = AppModel(this)
     }
 

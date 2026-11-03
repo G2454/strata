@@ -170,7 +170,7 @@ private fun TrackMenu(model: AppModel, s: Sheet.TrackMenu) {
         val i = ids.indexOf(tr.id)
         if (i > 0) ActionRow("Move up in playlist") { model.movePlaylistItem(pid, i, i - 1) }
         if (i >= 0 && i < ids.lastIndex) ActionRow("Move down in playlist") { model.movePlaylistItem(pid, i, i + 1) }
-        ActionRow("Remove from playlist") { model.removeFromPlaylist(pid, tr.id); model.sheet = null; model.flash("Removed from “${model.playlistName(pid)}”") }
+        ActionRow("Remove from playlist") { model.sheet = null; model.removeFromPlaylistWithUndo(pid, listOf(tr.id)) }
     }
     ActionRow("Properties", "details") { model.sheet = null; model.propsTab = 1; model.propsId = tr.id }
     ActionRow("Edit tags", "metadata") { model.sheet = null; model.propsTab = 0; model.propsId = tr.id }
@@ -184,17 +184,7 @@ private fun TrackMenu(model: AppModel, s: Sheet.TrackMenu) {
 }
 
 @Composable
-fun StarRow(rating: Int, onRate: (Int) -> Unit) {
-    val t = LocalTokens.current
-    Row(Modifier.padding(horizontal = 12.dp, vertical = 2.dp)) {
-        for (n in 1..5) {
-            IconBtn(
-                if (n <= rating) Ic.starFill else Ic.star, "Rate $n star" + if (n > 1) "s" else "",
-                { onRate(if (rating == n) 0 else n) }, tint = if (n <= rating) t.accent else t.faint,
-            )
-        }
-    }
-}
+fun StarRow(rating: Int, onRate: (Int) -> Unit) = AnimatedStars(rating, onRate)
 
 // ------------------------------------------------------------------ playlists
 
@@ -259,7 +249,7 @@ fun Field(label: String, value: String, onChange: (String) -> Unit, mono: Boolea
 private fun NewPlaylist(model: AppModel, s: Sheet.NewPlaylist) {
     var name by remember { mutableStateOf(if (s.auto) "New auto playlist" else "") }
     var query by remember { mutableStateOf("") }
-    val count = if (s.auto && query.isNotBlank()) model.search(query).size else null
+    val count = remember(query, model.index) { if (s.auto && query.isNotBlank()) model.search(query).size else null }
     SheetTitle(if (s.auto) "New auto playlist" else "New playlist", if (s.auto) "Fills itself from a query, like foobar2000 autoplaylists" else null)
     Field("Name", name, { name = it }, placeholder = "My playlist")
     if (s.auto) {

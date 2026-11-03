@@ -5,4 +5,6 @@
     <color name="widget_sub">#FFA7AAB1</color>
     <color name="widget_accent">#FF7FD1FF</color>
     <color name="widget_on_accent">#FF0D0E11</color>
+    <color name="widget_ripple">#33FFFFFF</color>
+    <color name="widget_ripple_on_accent">#330D0E11</color>
 </resources>

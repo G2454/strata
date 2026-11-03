@@ -1,6 +1,24 @@
 package com.strata.player.ui
 
 import androidx.compose.foundation.background
+import kotlin.math.roundToInt
+import androidx.compose.ui.zIndex
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.Animatable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -147,7 +165,7 @@ private fun TracksTab(model: AppModel) {
         if (s.columns) item { ColumnHeader() }
         if (sorted.isEmpty()) item { LibraryEmpty(model) }
         items(sorted, key = { it.id }) { tr ->
-            SelectableTrackRow(model, tr, ids, "All tracks", s.columns)
+            SelectableTrackRow(model, tr, ids, "All tracks", s.columns, modifier = Modifier.animateItem())
         }
     }
 }
@@ -254,7 +272,84 @@ fun LazyListScope.trackItems(
     items(tracks, key = { it.id }) { tr ->
         SelectableTrackRow(
             model, tr, ids, ctxName, model.settings.columns, playlist = playlist, onMenu = { onMenu(tr) },
+            modifier = Modifier.animateItem(),
             subtitle = if (numbered) "${tr.artist} · ${Fmt.time(tr.durationMs)}" else "${tr.artist} · ${tr.album}",
+        )
+    }
+}
+
+/** Which row of a playlist is being dragged, and how far. */
+class PlaylistDrag {
+    var draggingId by mutableStateOf<Long?>(null)
+    var fromIndex by mutableIntStateOf(-1)
+    var offset by mutableFloatStateOf(0f)
+    /** Bumped on every drop, so rows snap into their new places instead of animating from the old ones. */
+    var generation by mutableIntStateOf(0)
+
+    fun target(rowPx: Float, last: Int): Int =
+        if (fromIndex < 0) -1 else (fromIndex + (offset / rowPx).roundToInt()).coerceIn(0, last)
+
+    fun end() { draggingId = null; fromIndex = -1; offset = 0f; generation++ }
+}
+
+/**
+ * The tracks of a playlist you made, with a drag handle on every row: hold it and move, the other rows make room.
+ * (Dragging works within what's on screen; for long moves, "Move up/down" is still in the track menu.)
+ */
+fun LazyListScope.reorderableTrackItems(
+    model: AppModel, tracks: List<Track>, ctxName: String, pid: String, drag: PlaylistDrag, rowPx: Float, onMenu: (Track) -> Unit,
+) {
+    val ids = tracks.map { it.id }
+    itemsIndexed(tracks, key = { _, t -> t.id }) { i, tr ->
+        val t = LocalTokens.current
+        val from = drag.fromIndex
+        val target = drag.target(rowPx, ids.lastIndex)
+        val shift = when {
+            from < 0 || i == from -> 0f
+            i in (from + 1)..target -> -rowPx
+            i in target until from -> rowPx
+            else -> 0f
+        }
+        val slide = remember(drag.generation) { Animatable(0f) }
+        LaunchedEffect(shift, drag.generation) { slide.animateTo(shift, spring(dampingRatio = 0.8f, stiffness = Spring.StiffnessMediumLow)) }
+        val dragged = i == from
+        val lift by animateFloatAsState(if (dragged) 1f else 0f, tween(150), label = "lift")
+        SelectableTrackRow(
+            model, tr, ids, ctxName, model.settings.columns, playlist = pid, onMenu = { onMenu(tr) },
+            subtitle = "${tr.artist} · ${tr.album}",
+            modifier = Modifier
+                .animateItem(placementSpec = null)
+                .zIndex(if (dragged) 1f else 0f)
+                .graphicsLayer {
+                    translationY = if (dragged) drag.offset else slide.value
+                    scaleX = 1f + 0.02f * lift; scaleY = 1f + 0.02f * lift
+                    shadowElevation = 10.dp.toPx() * lift
+                }
+                .background(if (dragged) t.surface else Color.Transparent),
+            // The handle picks the row up at once and keeps every touch to itself, so holding it never turns into
+            // the row's long-press (which starts selecting) and dragging never scrolls the list.
+            handle = Modifier.pointerInput(tr.id, ids) {
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    down.consume()
+                    drag.draggingId = tr.id; drag.fromIndex = i; drag.offset = 0f
+                    try {
+                        while (true) {
+                            val c = awaitPointerEvent().changes.firstOrNull { it.id == down.id } ?: break
+                            if (!c.pressed) {
+                                c.consume()
+                                val to = drag.target(rowPx, ids.lastIndex)
+                                if (to >= 0 && to != i) model.movePlaylistTrack(pid, tr.id, ids[to])
+                                break
+                            }
+                            drag.offset += c.position.y - c.previousPosition.y
+                            c.consume()
+                        }
+                    } finally {
+                        drag.end()
+                    }
+                }
+            },
         )
     }
 }
@@ -274,6 +369,8 @@ fun SelectableTrackRow(
     onMenu: () -> Unit = { model.sheet = com.strata.player.Sheet.TrackMenu(tr.id) },
     subtitle: String = "${tr.artist} · ${tr.album}",
     beforePlay: () -> Unit = {},
+    modifier: Modifier = Modifier,
+    handle: Modifier? = null,
 ) {
     val selecting = model.selecting
     TrackRow(
@@ -284,5 +381,7 @@ fun SelectableTrackRow(
         onLongClick = { model.startSelection(ids, tr.id, playlist) },
         selecting = selecting,
         selected = selecting && tr.id in model.selected,
+        modifier = modifier,
+        handle = handle,
     )
 }

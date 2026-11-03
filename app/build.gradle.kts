@@ -14,8 +14,24 @@ android {
         applicationId = "com.strata.player"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "0.1.0"
+        // Every GitHub build gets a higher number, so Android sees it as an update (and Settings shows which build it is).
+        val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        versionCode = build ?: 1
+        versionName = if (build != null) "0.1.0 (build $build)" else "0.1.0 (local)"
+    }
+
+    // One permanent signing key, kept as GitHub secrets (see .github/workflows/build.yml). Without it Android
+    // refuses to install a new build over the old one, and uninstalling first deletes playlists and play counts.
+    val keystore = System.getenv("STRATA_KEYSTORE_FILE")?.let { file(it) }?.takeIf { it.exists() }
+    signingConfigs {
+        if (keystore != null) {
+            create("strata") {
+                storeFile = keystore
+                storePassword = System.getenv("STRATA_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("STRATA_KEY_ALIAS") ?: "strata"
+                keyPassword = System.getenv("STRATA_KEY_PASSWORD") ?: System.getenv("STRATA_KEYSTORE_PASSWORD")
+            }
+        }
     }
 
     buildTypes {
@@ -23,8 +39,12 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
-            // Signed with the debug key so the APK installs directly. Use your own key for store releases.
-            signingConfig = signingConfigs.getByName("debug")
+            // Without the secrets (a fork, or a local build) it falls back to the debug key so the APK still installs.
+            signingConfig = signingConfigs.findByName("strata") ?: signingConfigs.getByName("debug")
+        }
+        debug {
+            // Same key, so the debug APK can also be installed over the release one (and back).
+            signingConfigs.findByName("strata")?.let { signingConfig = it }
         }
     }
     compileOptions {

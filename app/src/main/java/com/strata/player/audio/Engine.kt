@@ -130,6 +130,8 @@ class Engine(
             }
 
             override fun onPositionDiscontinuity(oldPosition: Player.PositionInfo, newPosition: Player.PositionInfo, reason: Int) {
+                // A seek moves the widget's clock, which otherwise runs by itself.
+                if (reason == Player.DISCONTINUITY_REASON_SEEK) onStateChanged()
                 // Leaving a long file: remember where we were, or forget it when it played to the end.
                 val oldId = idOf(oldPosition.mediaItem)
                 if (oldId < 0 || oldPosition.mediaItemIndex == newPosition.mediaItemIndex && oldPosition.mediaItem == newPosition.mediaItem) return
@@ -506,6 +508,40 @@ class Engine(
         refreshIntent()
     }
 
+    /** Pauses for good (app closed): remembers the spot in long files and saves the session through the usual tick. */
+    fun stopForClose() {
+        if (player.playWhenReady) player.pause()
+        val id = currentId
+        if (id >= 0) rememberPosition(id, player.currentPosition)
+        refreshIntent()
+    }
+
+    /** The track [next] would go to, so the UI can show (and preload) it before the skip happens. */
+    fun peekNextId(): Long? {
+        val n = player.mediaItemCount
+        if (n == 0) return null
+        val i = player.nextMediaItemIndex
+        val idx = when {
+            i != C.INDEX_UNSET -> i
+            order != Order.DEFAULT -> 0
+            else -> return null
+        }
+        return idOf(player.getMediaItemAt(idx)).takeIf { it >= 0 }
+    }
+
+    /** The track a swipe back goes to (unlike the button, a swipe never just restarts the current track). */
+    fun peekPreviousId(): Long? {
+        if (player.mediaItemCount == 0) return null
+        val i = player.previousMediaItemIndex
+        if (i == C.INDEX_UNSET) return null
+        return idOf(player.getMediaItemAt(i)).takeIf { it >= 0 }
+    }
+
+    /** Swipe back: always the previous track (the previous button restarts the current one after 3 seconds). */
+    fun previousTrack() {
+        if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem() else player.seekTo(0)
+    }
+
     fun next() {
         if (player.hasNextMediaItem()) player.seekToNextMediaItem()
         else if (player.mediaItemCount > 0 && order != Order.DEFAULT) player.seekTo(0, 0)
@@ -593,6 +629,9 @@ class Engine(
         positions.clear(); positions.putAll(saved)
     }
 
+    /** All remembered long-file positions (for backups). */
+    fun savedPositions(): Map<Long, Long> = positions.toMap()
+
     fun savedPosition(id: Long): Long? = positions[id]
 
     private fun isLong(id: Long): Boolean {
@@ -632,9 +671,9 @@ class Engine(
     private fun startTicker() {
         if (ticker?.isActive == true) return
         ticker = scope.launch {
-            var n = 0
+            var lastSave = SystemClock.elapsedRealtime()
             while (isActive) {
-                delay(100)
+                delay(tickInterval())
                 val playing = player.isPlaying
                 // Fade between tracks (volume follows real output position).
                 val fade = settings.fadeSec * 1000L
@@ -659,7 +698,10 @@ class Engine(
                     player.volume = 1f
                     onMessage("Sleep timer ended. Playback paused.")
                 }
-                if (++n % 50 == 0) {
+                // Position saves are cheap now (a tiny file), but there's still no need to do them often.
+                val now = SystemClock.elapsedRealtime()
+                if (playing && now - lastSave >= SAVE_EVERY_MS) {
+                    lastSave = now
                     onTick(player.currentPosition)
                     rememberPosition(currentId, player.currentPosition)
                 }
@@ -667,6 +709,17 @@ class Engine(
             }
         }
     }
+
+    /**
+     * How long the ticker sleeps. Volume fades need 10 updates a second, but only while one can be happening:
+     * the start and end of a track with "fade between tracks" on, or the last seconds of a sleep timer.
+     * The rest of the time once a second is plenty, which keeps the phone asleep between ticks.
+     */
+    private fun tickInterval(): Long = tickIntervalFor(
+        playing = player.isPlaying, positionMs = player.currentPosition, durationMs = player.duration,
+        fadeMs = settings.fadeSec * 1000L, sleepLeftMs = sleepRemainingMs(), endOfTrackFade = sleepEndOfTrack,
+        speed = settings.speed, volume = player.volume,
+    )
 
     // ------------------------------------------------------------------ output devices
 
@@ -711,7 +764,39 @@ class Engine(
         .build()
 
     companion object {
-        fun idOf(item: MediaItem?): Long = item?.mediaId?.split(':')?.getOrNull(1)?.toLongOrNull() ?: -1L
+        /** Track id from a media id like "t:123:7" (no splitting into lists: this runs for every queue item). */
+        fun idOf(item: MediaItem?): Long {
+            val m = item?.mediaId ?: return -1L
+            val a = m.indexOf(':')
+            if (a < 0) return -1L
+            val b = m.indexOf(':', a + 1)
+            return (if (b < 0) m.substring(a + 1) else m.substring(a + 1, b)).toLongOrNull() ?: -1L
+        }
+
+        /**
+         * How long the ticker sleeps. Volume fades need 10 updates a second, but only while one can be happening:
+         * the start and end of a track with "fade between tracks" on, or the last seconds of a sleep timer.
+         * The rest of the time once a second is plenty, which lets the phone sleep between ticks.
+         */
+        fun tickIntervalFor(
+            playing: Boolean, positionMs: Long, durationMs: Long, fadeMs: Long,
+            sleepLeftMs: Long?, endOfTrackFade: Boolean, speed: Float, volume: Float,
+        ): Long {
+            if (!playing) return TICK_SLOW_MS // a paused sleep timer only has to notice that it ran out
+            // Look ahead a bit more than one slow tick (more at higher speeds) so a fade never starts late.
+            val margin = (TICK_SLOW_MS * 1.1f * speed.coerceAtLeast(1f)).toLong()
+            if (sleepLeftMs != null && sleepLeftMs < SLEEP_FADE_MS + margin) return TICK_FAST_MS
+            val left = if (durationMs > 0) durationMs - positionMs else Long.MAX_VALUE
+            if (endOfTrackFade && left < TRACK_FADE_MS + margin) return TICK_FAST_MS
+            if (fadeMs > 0 && (positionMs < fadeMs + margin || left < fadeMs + margin)) return TICK_FAST_MS
+            if (volume != 1f) return TICK_FAST_MS // finish restoring the volume promptly
+            return TICK_SLOW_MS
+        }
+
+        const val TICK_FAST_MS = 100L
+        const val TICK_SLOW_MS = 1_000L
+        /** While playing, the session position (and long-file positions) are saved this often. */
+        const val SAVE_EVERY_MS = 15_000L
 
         const val SLEEP_FADE_MS = 30_000L
         const val TRACK_FADE_MS = 10_000L

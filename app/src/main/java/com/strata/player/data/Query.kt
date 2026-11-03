@@ -13,9 +13,18 @@ package com.strata.player.data
  */
 class Query private constructor(private val terms: List<Term>) {
 
-    private data class Term(val field: String?, val op: String, val value: String, val negate: Boolean)
+    private data class Term(val field: String?, val op: String, val value: String, val negate: Boolean) {
+        /** "a|b|c" split once when the query is parsed, not once per track. */
+        val alts: List<String> = value.split('|')
+    }
 
     val isEmpty: Boolean get() = terms.isEmpty()
+
+    /** True when results depend on ratings, play counts or favorites (so they change as you listen). */
+    val usesUserData: Boolean get() = terms.any { it.field in USER_FIELDS }
+
+    /** True when results depend on the sample rate / bit depth scan. */
+    val usesTech: Boolean get() = terms.any { it.field in TECH_FIELDS }
 
     interface Fields {
         fun rating(t: Track): Int
@@ -24,6 +33,8 @@ class Query private constructor(private val terms: List<Term>) {
         fun favorite(t: Track): Boolean
         /** Every performer of the track, including featured guests. */
         fun artists(t: Track): List<String> = listOf(t.artist)
+        /** Lower-case text that plain words are looked up in; worth precomputing for a whole library. */
+        fun text(t: Track): String = searchText(t)
     }
 
     fun matches(t: Track, f: Fields): Boolean = terms.all { term ->
@@ -33,10 +44,7 @@ class Query private constructor(private val terms: List<Term>) {
 
     private fun matchTerm(term: Term, t: Track, f: Fields): Boolean {
         val field = term.field
-        if (field == null) {
-            val hay = "${t.title} ${t.artist} ${t.album} ${t.albumArtist} ${t.genre} ${t.composer} ${t.codec} ${t.path}".lowercase()
-            return hay.contains(term.value)
-        }
+        if (field == null) return f.text(t).contains(term.value)
         val value: Any = when (field) {
             "title" -> t.title
             "artist" -> (listOf(t.artist) + f.artists(t)).joinToString(" ; ")
@@ -58,9 +66,10 @@ class Query private constructor(private val terms: List<Term>) {
             else -> return false
         }
         return when (term.op) {
-            ":", "=" -> term.value.split('|').any { alt ->
+            ":", "=" -> {
                 val s = if (value is Double) trimNum(value) else value.toString()
-                if (value is Number) s == alt || s.startsWith("$alt.") else s.lowercase().contains(alt)
+                if (value is Number) term.alts.any { alt -> s == alt || s.startsWith("$alt.") }
+                else { val l = s.lowercase(); term.alts.any { alt -> l.contains(alt) } }
             }
             else -> {
                 val a = (value as? Number)?.toDouble() ?: value.toString().toDoubleOrNull() ?: return false
@@ -79,6 +88,13 @@ class Query private constructor(private val terms: List<Term>) {
     private fun trimNum(d: Double): String = if (d == Math.floor(d)) d.toLong().toString() else d.toString()
 
     companion object {
+        private val USER_FIELDS = setOf("rating", "plays", "playcount", "fav", "favorite")
+        private val TECH_FIELDS = setOf("bits", "rate")
+
+        /** What plain search words match against: title, artists, album, genre, composer, format and path. */
+        fun searchText(t: Track): String =
+            "${t.title} ${t.artist} ${t.album} ${t.albumArtist} ${t.genre} ${t.composer} ${t.codec} ${t.path}".lowercase()
+
         private val fieldRe = Regex("^([a-z]+)(>=|<=|:|=|>|<)(.+)$")
 
         fun parse(input: String): Query {

@@ -78,7 +78,7 @@ fun SelectionBar(model: AppModel) {
 private fun RowScope.BarAction(icon: ImageVector, label: String, enabled: Boolean, onClick: () -> Unit) {
     val t = LocalTokens.current
     Column(
-        Modifier.weight(1f).fillMaxSize().clip(RoundedCornerShape(12.dp))
+        Modifier.weight(1f).fillMaxSize().pressScale(0.92f).clip(RoundedCornerShape(12.dp))
             .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -100,7 +100,8 @@ fun TrackPicker(model: AppModel, pid: String) {
     var q by remember(pid) { mutableStateOf("") }
     var picked by remember(pid) { mutableStateOf<List<Long>>(emptyList()) }
     val all = remember(model.index) { model.sortedTracks(SortKey.TITLE) }
-    val shown = remember(q, all, model.user, model.tech) { if (q.isBlank()) all else model.search(q).sortedWith(com.strata.player.data.Natural.by { it.title }) }
+    val found = rememberSearch(model, q)
+    val shown = remember(q, all, found) { if (q.isBlank()) all else found.sortedWith(com.strata.player.data.Natural.by { it.title }) }
     val inList = playlist?.ids?.toSet() ?: emptySet()
     val addable = shown.filter { it.id !in inList }.map { it.id }
 

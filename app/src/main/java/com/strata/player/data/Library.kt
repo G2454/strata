@@ -64,7 +64,7 @@ object MediaScanner {
                 val disc = if (iDisc >= 0) c.str(iDisc).substringBefore('/').toIntOrNull() ?: 0 else 0
                 out += Track(
                     id = id,
-                    uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id),
+                    uri = uriOf(id),
                     title = c.str(iTitle).ifBlank { path.substringAfterLast('/').substringBeforeLast('.') },
                     artist = artist,
                     album = c.str(iAlbum).cleanUnknown("Unknown album"),
@@ -87,6 +87,8 @@ object MediaScanner {
         }
         return out
     }
+
+    fun uriOf(id: Long): android.net.Uri = ContentUris.withAppendedId(MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, id)
 
     private fun Cursor.str(i: Int): String = if (i < 0 || isNull(i)) "" else getString(i) ?: ""
 
@@ -141,6 +143,12 @@ class LibraryIndex(val tracks: List<Track>, splitter: ArtistSplitter = ArtistSpl
     val genres: List<Pair<String, List<Track>>> = tracks.groupBy { it.genre }.toList().sortedWith(Natural.by { it.first })
     val folders: List<Pair<String, List<Track>>> = tracks.groupBy { it.folder }.toList().sortedWith(Natural.by { it.first })
     val composers: List<Pair<String, List<Track>>> = tracks.groupBy { it.composer }.toList().sortedWith(Natural.by { it.first })
+
+    /** Lower-case search text per track, built the first time someone searches (off the main thread for big libraries). */
+    val searchText: Map<Long, String> by lazy { HashMap<Long, String>(tracks.size * 2).apply { tracks.forEach { put(it.id, Query.searchText(it)) } } }
+
+    /** The 30 newest files ("Recently added"), sorted once per scan. */
+    val recentlyAdded: List<Track> by lazy { tracks.sortedByDescending { it.dateAddedSec }.take(30) }
 
     val totalDurationMs: Long = tracks.sumOf { it.durationMs }
     val totalBytes: Long = tracks.sumOf { it.sizeBytes }

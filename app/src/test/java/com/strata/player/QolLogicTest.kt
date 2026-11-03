@@ -5,8 +5,10 @@ import android.media.AudioDeviceInfo
 import android.net.Uri
 import android.os.Looper
 import android.view.View
+import android.widget.Chronometer
 import android.widget.FrameLayout
 import android.widget.TextView
+import android.widget.ViewFlipper
 import androidx.test.core.app.ApplicationProvider
 import com.strata.player.data.Natural
 import com.strata.player.data.Order
@@ -324,11 +326,11 @@ class QolLogicTest {
         // Both layouts inflate and show the track.
         for (large in listOf(true, false)) {
             val view = StrataWidgets.buildPlayer(ctx, state, StrataWidgets.generated(state.albumId, 96), large).apply(ctx, FrameLayout(ctx))
-            assertEquals("One", view.findViewById<TextView>(R.id.w_title).text.toString())
+            assertEquals("One", view.findViewById<TextView>(StrataWidgets.titleId(0)).text.toString())
             assertEquals(if (state.playing) "Pause" else "Play", view.findViewById<View>(R.id.w_play).contentDescription)
         }
         val empty = StrataWidgets.buildPlayer(ctx, null, null, large = true).apply(ctx, FrameLayout(ctx))
-        assertEquals("Strata", empty.findViewById<TextView>(R.id.w_title).text.toString())
+        assertEquals("Strata", empty.findViewById<TextView>(StrataWidgets.titleId(0)).text.toString())
 
         WidgetActionReceiver().onReceive(ctx, Intent(StrataWidgets.ACTION_NEXT)); idle()
         assertEquals(2L, e.currentId)
@@ -357,5 +359,148 @@ class QolLogicTest {
         model.startFromWidget(StrataWidgets.ACTION_PLAY_FROM, "shuffle") { ok = it }; idle()
         assertEquals(library.size, ids().size)
         assertTrue(model.settings.order.isShuffle)
+    }
+
+    @Test
+    fun widgetCrossfadesBetweenTracksAndRunsItsOwnClock() {
+        val ctx = ApplicationProvider.getApplicationContext<StrataApp>()
+        val now = 50_000L
+        val a = WidgetState(
+            1, "One", "Artist Alpha", "Alpha", 105, "", playing = true, favorite = false,
+            positionMs = 30_000, durationMs = 200_000, atElapsed = now - 5_000,
+        )
+        val view = StrataWidgets.buildPlayer(ctx, a, null, large = true, slot = 0, now = now).apply(ctx, FrameLayout(ctx))
+        val info = view.findViewById<ViewFlipper>(R.id.w_info)
+        assertEquals(0, info.displayedChild)
+        // Playing: a Chronometer based 35 s in the past, ticked by the launcher. No app code runs to move it.
+        val chrono = view.findViewById<Chronometer>(R.id.w_elapsed)
+        assertEquals(View.VISIBLE, chrono.visibility)
+        assertEquals(now - 35_000, chrono.base)
+        assertEquals(View.GONE, view.findViewById<View>(R.id.w_pos).visibility)
+        assertEquals(" / 03:20", view.findViewById<TextView>(R.id.w_total).text.toString())
+        assertEquals("pause icon showing", 1, view.findViewById<ViewFlipper>(R.id.w_play).displayedChild)
+        assertEquals("Pause", view.findViewById<View>(R.id.w_play).contentDescription)
+        assertEquals(0, view.findViewById<ViewFlipper>(R.id.w_fav).displayedChild)
+
+        // The next track goes into the other slot. Reapplied onto the same view (what launchers do), the old
+        // track is still in the first slot, so the flipper crossfades from it.
+        val b = a.copy(trackId = 2, title = "Two", playing = false, favorite = true, positionMs = 12_000)
+        StrataWidgets.buildPlayer(ctx, b, null, large = true, slot = 1, now = now).reapply(ctx, view)
+        assertEquals(1, info.displayedChild)
+        assertEquals("Two", view.findViewById<TextView>(StrataWidgets.titleId(1)).text.toString())
+        assertEquals("One", view.findViewById<TextView>(StrataWidgets.titleId(0)).text.toString())
+        assertEquals("play icon showing", 0, view.findViewById<ViewFlipper>(R.id.w_play).displayedChild)
+        assertEquals("heart filled", 1, view.findViewById<ViewFlipper>(R.id.w_fav).displayedChild)
+        // Paused: plain text, so it can't drift.
+        assertEquals(View.GONE, chrono.visibility)
+        assertEquals("00:12", view.findViewById<TextView>(R.id.w_pos).text.toString())
+
+        // Saved before a reboot (base in the future), finished long ago, or not at 1x: never a running clock.
+        assertFalse(a.copy(atElapsed = now + 1).clockRuns(now))
+        assertFalse(a.copy(atElapsed = now - 600_000).clockRuns(now))
+        assertFalse(a.copy(normalSpeed = false).clockRuns(now))
+        assertEquals(35_000L, a.positionAt(now))
+
+        // The slot flips only when the track changes, not on play/pause.
+        val s1 = StrataWidgets.slotFor(ctx, a)
+        assertEquals(s1, StrataWidgets.slotFor(ctx, a.copy(playing = false)))
+        assertEquals(1 - s1, StrataWidgets.slotFor(ctx, b))
+        assertEquals(1 - s1, StrataWidgets.slotFor(ctx, b.copy(favorite = false)))
+    }
+
+    @Test
+    fun playFromWidgetHighlightsWhatIsPlaying() {
+        val ctx = ApplicationProvider.getApplicationContext<StrataApp>()
+        model.toggleFav(4); model.toggleFav(5)
+        model.playFrom("fav"); idle()
+        model.publishWidget()
+        val state = StrataWidgets.readState(ctx)!!
+        assertEquals("fav", state.fromTile)
+        assertEquals(e.player.currentPosition.coerceAtLeast(0L), state.positionMs)
+        assertEquals(model.track(e.currentId)!!.durationMs, state.durationMs)
+
+        val launcher = StrataWidgets.buildPlayFrom(ctx, state.copy(playing = true)).apply(ctx, FrameLayout(ctx))
+        StrataWidgets.TILES.forEach { t ->
+            val sub = launcher.findViewById<TextView>(t.subId).text.toString()
+            assertEquals(if (t.key == "fav") "Playing now" else t.sub, sub)
+        }
+        // Paused: no highlight.
+        val paused = StrataWidgets.buildPlayFrom(ctx, state.copy(playing = false)).apply(ctx, FrameLayout(ctx))
+        StrataWidgets.TILES.forEach { t -> assertEquals(t.sub, paused.findViewById<TextView>(t.subId).text.toString()) }
+
+        model.play(listOf(1L, 2L), 1, "Something else"); idle()
+        model.publishWidget()
+        assertNull(StrataWidgets.readState(ctx)!!.fromTile)
+    }
+
+    // ------------------------------------------------------------------ closing the app
+
+    @Test
+    fun closingTheAppStopsPlaybackUnlessAskedToKeepPlaying() {
+        val ctx = ApplicationProvider.getApplicationContext<StrataApp>()
+        model.play(listOf(1L, 2L, 3L), 2, "Test"); idle()
+        assertTrue(e.player.playWhenReady)
+        assertFalse("the service should stop", model.onAppClosed()); idle()
+        assertFalse(e.player.playWhenReady)
+        assertFalse(e.playIntent)
+        assertEquals("the track stays loaded for next time", 2L, e.currentId)
+        assertFalse(StrataWidgets.readState(ctx)!!.playing)
+
+        model.updateSettings { it.copy(keepPlayingAfterClose = true) }
+        e.player.play(); idle()
+        assertTrue("keeps the service alive", model.onAppClosed())
+        assertTrue(e.player.playWhenReady)
+
+        // Paused when closed: nothing to keep alive either way.
+        e.player.pause(); idle()
+        assertFalse(model.onAppClosed())
+    }
+
+    @Test
+    fun closingRemembersThePositionInLongFiles() {
+        model.play(listOf(6L, 1L), 6, "Mixes"); idle()
+        e.seekTo(20 * 60_000L); idle()
+        model.onAppClosed(); idle()
+        assertEquals(20 * 60_000L, e.savedPosition(6))
+    }
+
+    // ------------------------------------------------------------------ swiping between tracks
+
+    @Test
+    fun neighboursForSwipingFollowThePlaybackOrder() {
+        model.play(listOf(1L, 2L, 3L), 1, "Test"); idle()
+        assertNull("nothing before the first track", e.peekPreviousId())
+        assertEquals(2L, e.peekNextId())
+        e.next(); idle()
+        assertEquals(1L, e.peekPreviousId())
+        assertEquals(3L, e.peekNextId())
+        e.next(); idle()
+        assertNull("end of the list, no repeat", e.peekNextId())
+
+        model.updateSettings { it.copy(order = Order.REPEAT_PLAYLIST) }
+        e.changeOrder(Order.REPEAT_PLAYLIST); idle()
+        val t = ids()
+        assertEquals("wraps around", t[(t.indexOf(e.currentId) + 1) % t.size], e.peekNextId())
+
+        // A swipe back always goes to the previous track; the button restarts the current one after 3 s.
+        model.updateSettings { it.copy(order = Order.DEFAULT) }
+        e.changeOrder(Order.DEFAULT); idle()
+        val cur = e.currentId
+        val before = e.peekPreviousId()!!
+        e.seekTo(30_000); idle()
+        e.previousTrack(); idle()
+        assertEquals(before, e.currentId)
+        assertTrue(cur != e.currentId)
+    }
+
+    @Test
+    fun artRequestsShareOneCacheEntryPerAlbumAndSize() {
+        val ctx = ApplicationProvider.getApplicationContext<StrataApp>()
+        val one = model.track(1)!!
+        val two = model.track(2)!!
+        val big = com.strata.player.ui.artRequest(ctx, one, big = true)
+        assertEquals("art:${one.albumId}:900", big.memoryCacheKey?.key)
+        assertEquals("same album, same bitmap", big.memoryCacheKey, com.strata.player.ui.artRequest(ctx, two, big = true).memoryCacheKey)
+        assertEquals("art:${one.albumId}:240", com.strata.player.ui.artRequest(ctx, one, big = false).memoryCacheKey?.key)
     }
 }

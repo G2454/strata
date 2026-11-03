@@ -1,6 +1,14 @@
 package com.strata.player.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
@@ -55,6 +63,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
@@ -69,6 +78,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
@@ -86,16 +96,23 @@ import com.strata.player.data.Order
 import com.strata.player.data.RgMode
 import com.strata.player.data.Track
 import kotlinx.coroutines.delay
+import kotlin.math.abs
 
+/**
+ * The playback position, refreshed every [intervalMs] while playing and while the app is on screen.
+ * (Compose keeps `delay` loops running after the app goes to the background; this one stops itself.)
+ */
 @Composable
-fun rememberPosition(e: Engine, intervalMs: Long = 100): State<Long> =
-    produceState(e.player.currentPosition, e.currentId, e.isPlaying) {
+fun rememberPosition(model: AppModel, intervalMs: Long = 100): State<Long> {
+    val e = model.engine
+    return produceState(e.player.currentPosition, e.currentId, e.isPlaying, model.uiVisible) {
         while (true) {
             value = e.player.currentPosition
-            if (!e.isPlaying) break
+            if (!e.isPlaying || !model.uiVisible) break
             delay(intervalMs)
         }
     }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -104,7 +121,9 @@ fun NowPlayingScreen(model: AppModel) {
     val e = model.engine
     val cur = model.track(e.currentId) ?: return
     val tech = model.tech[cur.id] ?: e.currentTags?.tech
-    val glow = t.accentRaw.copy(alpha = if (t.dark) 0.24f else 0.4f)
+    // The glow follows the album colour smoothly; it is read in the draw phase, so only this background redraws.
+    val glow = animateColorAsState(t.accentRaw.copy(alpha = if (t.dark) 0.24f else 0.4f), tween(600), label = "glow")
+    val bg = t.bg
 
     Column(
         Modifier
@@ -112,7 +131,7 @@ fun NowPlayingScreen(model: AppModel) {
             .testTag("nowplaying")
             .blockTouches()
             .background(t.bg)
-            .background(Brush.verticalGradient(0f to glow, 0.58f to t.bg))
+            .drawBehind { drawRect(Brush.verticalGradient(0f to glow.value, 0.58f to bg)) }
             .statusBarsPadding()
             .navigationBarsPadding()
     ) {
@@ -133,9 +152,10 @@ fun NowPlayingScreen(model: AppModel) {
             ) {
                 NpView.entries.forEach { v ->
                     val on = model.npView == v
+                    val pill by animateColorAsState(if (on) (if (t.dark) Color.White.copy(alpha = 0.14f) else Color.White) else Color.Transparent, tween(200), label = "view")
                     Box(
                         Modifier.height(38.dp).clip(RoundedCornerShape(19.dp))
-                            .background(if (on) (if (t.dark) Color.White.copy(alpha = 0.14f) else Color.White) else Color.Transparent)
+                            .background(pill)
                             .clickable { model.npView = v }.padding(horizontal = 14.dp),
                         contentAlignment = Alignment.Center,
                     ) { Text(v.label, style = Type.body(13, FontWeight.Medium), color = if (on) t.text else t.sub) }
@@ -157,15 +177,20 @@ fun NowPlayingScreen(model: AppModel) {
         }
         // Title
         Row(Modifier.fillMaxWidth().padding(start = 28.dp, end = 16.dp, top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                Text(cur.title, style = Type.display(25), color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    "${cur.artist} · ${cur.album}", style = Type.body(15), color = t.sub, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.clickable { model.goTo(com.strata.player.Detail.AlbumD(cur.albumId)) },
-                )
+            AnimatedContent(
+                cur, Modifier.weight(1f),
+                transitionSpec = { (fadeIn(tween(260, delayMillis = 60)) + slideInVertically(tween(260)) { it / 4 }) togetherWith fadeOut(tween(120)) },
+                contentKey = { it.id }, label = "title",
+            ) { tr ->
+                Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Text(tr.title, style = Type.display(25), color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text(
+                        "${tr.artist} · ${tr.album}", style = Type.body(15), color = t.sub, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable { model.goTo(com.strata.player.Detail.AlbumD(tr.albumId)) },
+                    )
+                }
             }
-            val fav = model.isFav(cur.id)
-            IconBtn(if (fav) Ic.heartFill else Ic.heart, if (fav) "Remove from favorites" else "Add to favorites", { model.toggleFav(cur.id) }, tint = if (fav) t.accent else t.sub, size = 48.dp, iconSize = 26.dp)
+            HeartButton(model.isFav(cur.id), { model.toggleFav(cur.id) })
         }
         // Badges
         FlowRow(Modifier.fillMaxWidth().padding(start = 28.dp, end = 28.dp, top = 8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -181,7 +206,7 @@ fun NowPlayingScreen(model: AppModel) {
         }
         // Rating
         Row(Modifier.fillMaxWidth().padding(start = 16.dp, top = 2.dp)) {
-            StarRow(model.rating(cur)) { model.setRating(cur.id, it) }
+            AnimatedStars(model.rating(cur)) { model.setRating(cur.id, it) }
         }
         // Seek
         SeekBar(model, cur)
@@ -200,12 +225,14 @@ fun NowPlayingScreen(model: AppModel) {
                 model.flash(next.label)
             }
             IconBtn(Ic.prev, "Previous track", e::previous, size = 60.dp, iconSize = 30.dp)
+            val playDesc = if (e.playIntent) "Pause" else "Play"
             Box(
-                Modifier.size(78.dp).shadow(16.dp, CircleShape, ambientColor = t.accentRaw, spotColor = t.accentRaw).clip(CircleShape).background(t.accentFill)
-                    .clickable(onClickLabel = if (e.playIntent) "Pause" else "Play") { e.togglePlay() },
+                Modifier.pressScale(0.9f).size(78.dp).shadow(16.dp, CircleShape, ambientColor = t.accentRaw, spotColor = t.accentRaw).clip(CircleShape).background(t.accentFill)
+                    .clickable(onClickLabel = playDesc) { e.togglePlay() }
+                    .semantics { contentDescription = playDesc },
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(if (e.playIntent) Ic.pause else Ic.play, if (e.playIntent) "Pause" else "Play", tint = t.onAccent, modifier = Modifier.size(32.dp))
+                PlayPauseIcon(e.playIntent, t.onAccent, 32.dp)
             }
             IconBtn(Ic.next, "Next track", e::next, size = 60.dp, iconSize = 30.dp)
             ModeButton(Ic.repeat, "Repeat: ${model.settings.order.label}", repeatOn, if (model.settings.order == Order.REPEAT_TRACK) "1" else null) {
@@ -223,7 +250,7 @@ fun NowPlayingScreen(model: AppModel) {
             )
         }
         // Bottom actions
-        val sleepLeft = sleepLabel(e)
+        val sleepLeft = sleepLabel(model)
         Row(Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp, bottom = 10.dp), horizontalArrangement = Arrangement.SpaceAround) {
             ActionButton(Ic.headphones, "Output", false) { model.sheet = Sheet.Output }
             ActionButton(Ic.moon, sleepLeft ?: "Sleep", sleepLeft != null) { model.sheet = Sheet.Sleep }
@@ -243,20 +270,18 @@ fun NowPlayingScreen(model: AppModel) {
 private fun CoverWithGestures(model: AppModel, cur: Track) {
     val t = LocalTokens.current
     val e = model.engine
-    var dx by remember { mutableStateOf(0f) }
-    var dy by remember { mutableStateOf(0f) }
+    val view = LocalView.current
+    val swipe = rememberTrackSwipe()
     var flash by remember { mutableStateOf<String?>(null) }
+    var lastFlash by remember { mutableStateOf("") }
     var flashKey by remember { mutableIntStateOf(0) }
     LaunchedEffect(flashKey) {
         if (flash != null) { delay(800); flash = null }
     }
-    val density = LocalDensity.current
-    val skipPx = with(density) { 72.dp.toPx() }
-    val upPx = with(density) { 56.dp.toPx() }
     Box(contentAlignment = Alignment.Center) {
-        Art(
-            cur,
-            Modifier.widthIn(max = 340.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
+        TrackStrip(
+            swipe, model, cur, gap = 24.dp,
+            modifier = Modifier.widthIn(max = 340.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
                 .testTag("np-art")
                 .semantics { contentDescription = "Cover. Swipe to skip, swipe up for the queue, double-tap to jump 30 seconds" }
                 .pointerInput(cur.id) {
@@ -264,31 +289,23 @@ private fun CoverWithGestures(model: AppModel, cur: Track) {
                         val forward = o.x >= size.width / 2f
                         e.seekBy(if (forward) 30_000 else -30_000)
                         flash = if (forward) "+30 s" else "−30 s"
+                        lastFlash = flash ?: ""
                         flashKey++
+                        haptic(view)
                     })
                 }
-                .pointerInput(cur.id) {
-                    detectDragGestures(
-                        onDragEnd = {
-                            when {
-                                kotlin.math.abs(dx) > skipPx && kotlin.math.abs(dx) > kotlin.math.abs(dy) -> if (dx < 0) e.next() else e.previous()
-                                -dy > upPx && kotlin.math.abs(dy) > kotlin.math.abs(dx) -> model.sheet = Sheet.Queue
-                            }
-                            dx = 0f; dy = 0f
-                        },
-                        onDragCancel = { dx = 0f; dy = 0f },
-                    ) { change, d -> change.consume(); dx += d.x; dy += d.y }
-                }
-                .graphicsLayer {
-                    translationX = dx * 0.5f
-                    translationY = dy.coerceAtMost(0f) * 0.25f
-                }
-                .shadow(30.dp, RoundedCornerShape(24.dp), ambientColor = t.accentRaw, spotColor = t.accentRaw),
-            RoundedCornerShape(24.dp), big = true,
-        )
-        flash?.let {
+                .trackSwipe(swipe, e, skip = 72.dp, up = 56.dp, gap = 24.dp, onUp = { model.sheet = Sheet.Queue }, onSkip = { haptic(view) })
+                .graphicsLayer { translationY = swipe.dy.coerceAtMost(0f) * 0.25f },
+        ) { tr ->
+            Art(
+                tr,
+                Modifier.fillMaxSize().shadow(30.dp, RoundedCornerShape(24.dp), ambientColor = t.accentRaw, spotColor = t.accentRaw),
+                RoundedCornerShape(24.dp), big = true,
+            )
+        }
+        AnimatedVisibility(flash != null, enter = scaleIn(tween(160), initialScale = 0.7f) + fadeIn(tween(120)), exit = fadeOut(tween(220))) {
             Text(
-                it, style = Type.display(22, FontWeight.SemiBold), color = Color.White,
+                lastFlash, style = Type.display(22, FontWeight.SemiBold), color = Color.White,
                 modifier = Modifier.clip(RoundedCornerShape(22.dp)).background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 18.dp, vertical = 10.dp),
             )
         }
@@ -296,12 +313,14 @@ private fun CoverWithGestures(model: AppModel, cur: Track) {
 }
 
 @Composable
-private fun sleepLabel(e: Engine): String? {
+private fun sleepLabel(model: AppModel): String? {
+    val e = model.engine
     if (e.sleepEndOfTrack) return "End trk"
     e.sleepTracksLeft?.let { return "$it songs" }
     val at = e.sleepAtMs ?: return null
-    val left by produceState(e.sleepRemainingMs() ?: 0L, at) {
-        while (true) { value = e.sleepRemainingMs() ?: 0L; delay(1000) }
+    val visible = model.uiVisible
+    val left by produceState(e.sleepRemainingMs() ?: 0L, at, visible) {
+        while (visible) { value = e.sleepRemainingMs() ?: 0L; delay(1000) }
     }
     return Fmt.time(left)
 }
@@ -311,7 +330,7 @@ private fun sleepLabel(e: Engine): String? {
 private fun ModeButton(icon: ImageVector, desc: String, on: Boolean, badge: String?, onLongClick: (() -> Unit)? = null, onClick: () -> Unit) {
     val t = LocalTokens.current
     Box(
-        Modifier.size(48.dp).clip(CircleShape)
+        Modifier.pressScale().size(48.dp).clip(CircleShape)
             .then(
                 if (onLongClick == null) Modifier.clickable(onClickLabel = desc, onClick = onClick)
                 else Modifier.combinedClickable(onClickLabel = desc, onLongClickLabel = "Play a random track", onLongClick = onLongClick, onClick = onClick),
@@ -333,7 +352,7 @@ private fun ModeButton(icon: ImageVector, desc: String, on: Boolean, badge: Stri
 private fun ActionButton(icon: ImageVector, label: String, on: Boolean, onClick: () -> Unit) {
     val t = LocalTokens.current
     Column(
-        Modifier.width(68.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 6.dp),
+        Modifier.pressScale(0.92f).width(68.dp).clip(RoundedCornerShape(14.dp)).clickable(onClick = onClick).padding(vertical = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
         Icon(icon, null, tint = if (on) t.accent else t.sub, modifier = Modifier.size(22.dp))
@@ -346,7 +365,7 @@ private fun SeekBar(model: AppModel, cur: Track) {
     val t = LocalTokens.current
     val e = model.engine
     val ctx = LocalContext.current
-    val pos by rememberPosition(e)
+    val pos by rememberPosition(model)
     var dragFrac by remember { mutableStateOf<Float?>(null) }
     val wave by produceState(Waveform.cached(cur.id), cur.id) {
         value = Waveform.cached(cur.id) ?: Waveform.load(ctx, cur.id, cur.uri, model.store.waveFile(cur.id))
@@ -419,7 +438,7 @@ private fun LyricsView(model: AppModel, cur: Track) {
         return
     }
     val synced = ls.firstOrNull()?.timeMs?.let { it >= 0 } == true
-    val pos by rememberPosition(e, 200)
+    val pos by rememberPosition(model, 200)
     val ci = if (!synced) -1 else ls.indexOfLast { it.timeMs <= pos }.coerceAtLeast(0)
     val state = rememberLazyListState()
     LaunchedEffect(ci) { if (ci >= 0) state.animateScrollToItem((ci - 2).coerceAtLeast(0)) }
@@ -457,6 +476,11 @@ private fun Visualizer(e: Engine) {
                 peaks = floatArrayOf(peaks[0] * 0.9f, peaks[1] * 0.9f)
             }
             frame++
+            // Paused and faded out: stop drawing frames until playback starts again.
+            if (!e.isPlaying && peaks[0] < 0.002f && peaks[1] < 0.002f && bands.all { it < 0.002f } && scope.all { abs(it) < 0.002f }) {
+                bands.fill(0f); scope.fill(0f); peaks = floatArrayOf(0f, 0f); frame++
+                break
+            }
         }
     }
     val panel = if (t.dark) Color.White.copy(alpha = 0.07f) else Color.Black.copy(alpha = 0.05f)

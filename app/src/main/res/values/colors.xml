@@ -8,4 +8,6 @@
     <color name="widget_sub">#FF53565D</color>
     <color name="widget_accent">#FF0A6593</color>
     <color name="widget_on_accent">#FFFFFFFF</color>
+    <color name="widget_ripple">#2216171B</color>
+    <color name="widget_ripple_on_accent">#33FFFFFF</color>
 </resources>

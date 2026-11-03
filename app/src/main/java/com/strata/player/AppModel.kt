@@ -36,6 +36,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -115,7 +116,11 @@ class AppModel(private val app: Application) {
     var index by mutableStateOf(LibraryIndex.EMPTY); private set
     var user by mutableStateOf(store.loadUser()); private set
     var settings by mutableStateOf(store.loadSettings()); private set
-    var tech by mutableStateOf(store.loadTech()); private set
+    /** Sample rate / bit depth per track. Loaded in the background: on a big library it's the largest file we keep. */
+    var tech by mutableStateOf<Map<Long, Tech>>(emptyMap()); private set
+    private val techLoaded = scope.async(Dispatchers.IO) { store.loadTech() }.also { d ->
+        scope.launch { val loaded = d.await(); tech = loaded + tech }
+    }
     val accents = mutableStateMapOf<Long, Pair<Color, Color>>()
     private val accentRequested = HashSet<Long>()
 
@@ -136,6 +141,9 @@ class AppModel(private val app: Application) {
     var settingsOpen by mutableStateOf(false)
     var query by mutableStateOf("")
     var toast by mutableStateOf<String?>(null); private set
+
+    /** False while the app is in the background: on-screen clocks and progress bars stop polling. */
+    var uiVisible by mutableStateOf(true)
 
     /** Playlist id the "Add songs" picker is filling, or null when the picker is closed. */
     var pickerFor by mutableStateOf<String?>(null)
@@ -163,12 +171,13 @@ class AppModel(private val app: Application) {
     init {
         engine.lookup = { index.byId[it] }
         engine.onTrackStarted = ::countPlay
-        engine.onTick = { pos ->
-            store.saveSession(Session(engine.context, engine.ctxName, engine.currentId, pos))
-            snapshotActiveQueue()
-        }
+        engine.onTick = { pos -> saveSession(pos) }
         engine.onMessage = ::flash
-        engine.onStateChanged = ::publishWidget
+        // Track changes, play/pause and seeks: update the widgets and remember the spot (both cheap).
+        engine.onStateChanged = {
+            publishWidget()
+            if (engine.currentId >= 0) saveSession(engine.player.currentPosition)
+        }
         engine.onPositionsChanged = { store.savePositions(it) }
         engine.installPositions(store.loadPositions())
         engine.applySettings(settings)
@@ -189,16 +198,31 @@ class AppModel(private val app: Application) {
         if (loading) return
         loading = true
         scope.launch {
+            // Cold start: show the library from the last scan right away; the fresh scan below replaces it.
+            if (rawTracks.isEmpty() && !announce) {
+                val cached = withContext(Dispatchers.IO) { store.loadLibrary() }
+                if (cached.isNotEmpty() && rawTracks.isEmpty()) {
+                    rawTracks = cached
+                    rebuildIndexNow()
+                    if (!restored) restoreSession()
+                }
+            }
             val before = rawTracks.size
             val ts = withContext(Dispatchers.IO) {
-                try { MediaScanner.scan(app, settings.ignoreShort) } catch (e: Exception) { emptyList() }
+                try { MediaScanner.scan(app, settings.ignoreShort) } catch (e: Exception) { null }
             }
-            rawTracks = ts
-            rebuildIndexNow()
+            // Nothing changed since the snapshot (the usual case): keep the index, so lists don't rebuild.
+            if (ts != null && ts != rawTracks) {
+                rawTracks = ts
+                rebuildIndexNow()
+                store.saveLibrary(ts)
+            } else if (ts == null && rawTracks.isEmpty()) {
+                rebuildIndexNow()
+            }
             loading = false
             if (!restored) restoreSession()
             scanTech()
-            if (announce) flash("Library rescanned · ${ts.size} tracks (${signed(ts.size - before)})")
+            if (announce) flash("Library rescanned · ${rawTracks.size} tracks (${signed(rawTracks.size - before)})")
         }
     }
 
@@ -266,15 +290,16 @@ class AppModel(private val app: Application) {
         techJob?.cancel()
         val tracks = index.tracks
         techJob = scope.launch(com.strata.player.data.Background.scan) {
-            val known = HashMap(tech)
+            val known = HashMap(techLoaded.await() + withContext(Dispatchers.Main) { tech })
             var dirty = 0
             for (t in tracks) {
                 if (known.containsKey(t.id)) continue
                 known[t.id] = tags.readTech(t) ?: Tech(0, if (t.lossless) 16 else 0, 2)
-                if (++dirty % 300 == 0) {
+                // Badges fill in every 1000 files; the cache file (rewritten whole) only every 2000.
+                if (++dirty % 1000 == 0) {
                     val snap = HashMap(known)
                     withContext(Dispatchers.Main) { tech = snap }
-                    store.saveTech(snap)
+                    if (dirty % 2000 == 0) store.saveTech(snap)
                 }
             }
             if (dirty > 0) {
@@ -318,6 +343,7 @@ class AppModel(private val app: Application) {
         settings = f(settings)
         store.saveSettings(settings)
         engine.applySettings(settings)
+        if (old.speed != settings.speed) publishWidget()
         if (old.ignoreShort != settings.ignoreShort) rescan()
         else if (old.splitArtists != settings.splitArtists || old.keepTogether != settings.keepTogether ||
             old.excludedFolders != settings.excludedFolders
@@ -362,18 +388,29 @@ class AppModel(private val app: Application) {
 
     fun originalTrack(id: Long): Track? = rawTracks.firstOrNull { it.id == id }
 
-    val queryFields = object : Query.Fields {
-        override fun rating(t: Track) = this@AppModel.rating(t)
-        override fun plays(t: Track) = this@AppModel.plays(t)
-        override fun tech(t: Track): Tech? = this@AppModel.tech[t.id]
-        override fun favorite(t: Track) = isFav(t.id)
-        override fun artists(t: Track) = index.artistsOf(t)
+    /**
+     * Search fields over one snapshot of the library and user data. Reading the plain values once (instead of the
+     * observable state for every track) keeps a search over thousands of tracks quick, and safe off the main thread.
+     */
+    private fun fieldsFor(idx: LibraryIndex): Query.Fields {
+        val u = user
+        val tc = tech
+        return object : Query.Fields {
+            override fun rating(t: Track) = u.ratings[t.id] ?: 0
+            override fun plays(t: Track) = u.plays[t.id] ?: 0
+            override fun tech(t: Track): Tech? = tc[t.id]
+            override fun favorite(t: Track) = t.id in u.favorites
+            override fun artists(t: Track) = idx.artistsOf(t)
+            override fun text(t: Track): String = idx.searchText[t.id] ?: Query.searchText(t)
+        }
     }
 
-    fun search(q: String): List<Track> {
-        val query = Query.parse(q)
+    fun search(q: String): List<Track> = search(Query.parse(q))
+
+    fun search(query: Query, idx: LibraryIndex = index): List<Track> {
         if (query.isEmpty) return emptyList()
-        return index.tracks.filter { query.matches(it, queryFields) }
+        val f = fieldsFor(idx)
+        return idx.tracks.filter { query.matches(it, f) }
     }
 
     fun sortedTracks(key: SortKey): List<Track> = when (key) {
@@ -389,13 +426,25 @@ class AppModel(private val app: Application) {
 
     fun playlistName(id: String): String = SMART_LISTS.firstOrNull { it.id == id }?.name ?: user.playlists.firstOrNull { it.id == id }?.name ?: "Playlist"
 
+    /** How many tracks a smart list has, without building and sorting it (the Playlists screen shows these). */
+    fun smartListCount(id: String): Int {
+        val by = index.byId
+        return when (id) {
+            "fav" -> user.favorites.count { by.containsKey(it) }
+            "most" -> minOf(30, user.plays.count { (k, v) -> v > 0 && by.containsKey(k) })
+            "recent" -> user.history.count { by.containsKey(it) }
+            "added" -> minOf(30, index.tracks.size)
+            else -> playlistIds(id).size
+        }
+    }
+
     fun playlistIds(id: String): List<Long> {
         val by = index.byId
         return when (id) {
             "fav" -> index.albumOrdered(index.tracks.filter { it.id in user.favorites }).map { it.id }
             "most" -> index.tracks.filter { plays(it) > 0 }.sortedByDescending { plays(it) }.take(30).map { it.id }
             "recent" -> user.history.filter { by.containsKey(it) }
-            "added" -> index.tracks.sortedByDescending { it.dateAddedSec }.take(30).map { it.id }
+            "added" -> index.recentlyAdded.map { it.id }
             "lost" -> lostMemories()
             else -> {
                 val p = user.playlists.firstOrNull { it.id == id } ?: return emptyList()
@@ -444,6 +493,34 @@ class AppModel(private val app: Application) {
     fun removeFromPlaylist(pid: String, tids: Collection<Long>) {
         val set = tids.toSet()
         updateUser { u -> u.copy(playlists = u.playlists.map { if (it.id == pid) it.copy(ids = it.ids.filter { id -> id !in set }) else it }) }
+    }
+
+    /** Removes tracks from a playlist and offers Undo in the toast, like removing from the queue. */
+    fun removeFromPlaylistWithUndo(pid: String, tids: Collection<Long>) {
+        val p = user.playlists.firstOrNull { it.id == pid } ?: return
+        val before = p.ids
+        val set = tids.toSet()
+        val n = before.count { it in set }
+        if (n == 0) return
+        removeFromPlaylist(pid, set)
+        val msg = if (n == 1) "Removed “${track(set.first())?.title ?: "track"}” from “${p.name}”" else "Removed ${com.strata.player.ui.Fmt.plural(n, "track")} from “${p.name}”"
+        flashUndo(msg) {
+            // Put them back where they were; anything added since stays.
+            updateUser { u ->
+                u.copy(playlists = u.playlists.map { pl ->
+                    if (pl.id != pid) pl else pl.copy(ids = before + pl.ids.filter { it !in before })
+                })
+            }
+        }
+    }
+
+    /** Drag-to-reorder: moves [trackId] to where [toTrackId] is now. */
+    fun movePlaylistTrack(pid: String, trackId: Long, toTrackId: Long) {
+        val ids = user.playlists.firstOrNull { it.id == pid }?.ids ?: return
+        val from = ids.indexOf(trackId)
+        val to = ids.indexOf(toTrackId)
+        if (from < 0 || to < 0 || from == to) return
+        movePlaylistItem(pid, from, to)
     }
 
     fun movePlaylistItem(pid: String, from: Int, to: Int) = updateUser { u ->
@@ -509,12 +586,30 @@ class AppModel(private val app: Application) {
         store.saveQueues(list, active)
     }
 
-    /** Copies what the engine is playing into the active saved queue (order, track, position). */
-    fun snapshotActiveQueue() {
+    private fun saveSession(pos: Long) {
+        store.saveSession(Session(engine.context, engine.ctxName, engine.currentId, pos))
+        snapshotActiveQueue(force = !engine.isPlaying)
+    }
+
+    private var switching = false
+    private var snapVersion = -1
+    private var snapIds: List<Long> = emptyList()
+
+    /**
+     * Copies what the engine is playing into the active saved queue (order, track, position).
+     * While it keeps playing the same track only the position moves, and that is already in the session file,
+     * so the queues file is rewritten only when the order or the track changes, or when [force]d (pause, close).
+     */
+    fun snapshotActiveQueue(force: Boolean = true) {
+        if (switching) return
         val id = activeQueueId ?: return
-        val ids = engine.timelineIds()
+        val q = queues.firstOrNull { it.id == id } ?: return
+        val ver = engine.timelineVersion
+        if (ver != snapVersion) { snapIds = engine.timelineIds(); snapVersion = ver }
+        val ids = snapIds
         if (ids.isEmpty()) return
         val i = engine.player.currentMediaItemIndex.coerceIn(0, ids.lastIndex)
+        if (!force && q.index == i && (q.ids === ids || q.ids == ids)) return
         commitQueues(queues.map { if (it.id == id) it.copy(ids = ids, index = i, positionMs = engine.player.currentPosition, updatedAt = System.currentTimeMillis()) else it }, id)
     }
 
@@ -580,7 +675,13 @@ class AppModel(private val app: Application) {
             val autos = (list.filter { it.auto } + auto).sortedByDescending { it.updatedAt }.take(MAX_AUTO_QUEUES).map { it.id }.toSet()
             list = (list + auto).filter { !it.auto || it.id in autos }
         }
-        engine.loadQueue(target.ids, target.index, target.positionMs, target.name, play)
+        // Loading fires player events; they must not snapshot the new queue into the one being left.
+        switching = true
+        try {
+            engine.loadQueue(target.ids, target.index, target.positionMs, target.name, play)
+        } finally {
+            switching = false
+        }
         commitQueues(list, qid)
         flash("Playing queue “${target.name}”")
     }
@@ -632,19 +733,114 @@ class AppModel(private val app: Application) {
         flash("Hid ${com.strata.player.ui.Fmt.plural(n, "file")} from ${com.strata.player.ui.Fmt.plural(junk.size, "folder")}")
     }
 
+    /**
+     * The app was swiped away from recent apps. Unless "Keep playing after closing" is on, playback stops
+     * (and the session is saved) like in other players. Returns true when the playback service should stay alive.
+     */
+    fun onAppClosed(): Boolean {
+        if (settings.keepPlayingAfterClose && engine.player.playWhenReady) return true
+        engine.stopForClose()
+        if (engine.currentId >= 0) saveSession(engine.player.currentPosition)
+        publishWidget()
+        return false
+    }
+
+    // ---------------------------------------------------------------- backup & restore
+
+    /** A snapshot of everything worth keeping: user data, settings, saved queues and long-file positions. */
+    fun currentBackup(): com.strata.player.data.Backup {
+        val u = user
+        val ids = HashSet<Long>()
+        ids += u.favorites; ids += u.ratings.keys; ids += u.plays.keys; ids += u.firstPlayed.keys; ids += u.lastPlayed.keys
+        ids += u.history; ids += u.overrides.keys; u.playlists.forEach { ids += it.ids }
+        queues.forEach { ids += it.ids }
+        val positions = engine.savedPositions()
+        ids += positions.keys
+        val byId = rawTracks.associateBy { it.id }
+        val refs = ids.mapNotNull { id -> byId[id]?.let { t -> id to com.strata.player.data.TrackRef(t.path, t.title, t.artist, t.album, t.durationMs) } }.toMap()
+        return com.strata.player.data.Backup(u, settings, queues, positions, refs, System.currentTimeMillis())
+    }
+
+    fun exportBackup(): String = store.backupToJson(currentBackup())
+
+    /**
+     * Restores a backup file. Track ids are matched to this phone's library by file path, then by title, artist and
+     * album, so playlists survive moving to a new phone. Offers Undo. Returns false if the text isn't a backup.
+     */
+    fun importBackup(text: String): Boolean {
+        val b = store.backupFromJson(text)
+        if (b == null) { flash("That file isn't a Strata backup"); return false }
+        val before = currentBackup()
+        applyBackup(remapped(b))
+        val n = b.user.playlists.size
+        val date = java.text.DateFormat.getDateInstance(java.text.DateFormat.MEDIUM).format(java.util.Date(b.createdAt))
+        flashUndo("Restored the backup from $date · ${com.strata.player.ui.Fmt.plural(n, "playlist")}") { applyBackup(before) }
+        return true
+    }
+
+    /** Backup track ids → ids of the same files in this library (unknown ones are kept as they are). */
+    private fun remapped(b: com.strata.player.data.Backup): com.strata.player.data.Backup {
+        if (b.tracks.isEmpty() || rawTracks.isEmpty()) return b
+        val byPath = rawTracks.associateBy { it.path }
+        fun key(title: String, artist: String, album: String) = "${title.lowercase()}\u0000${artist.lowercase()}\u0000${album.lowercase()}"
+        val byTags = HashMap<String, Track>()
+        rawTracks.forEach { byTags.putIfAbsent(key(it.title, it.artist, it.album), it) }
+        val map = HashMap<Long, Long>()
+        for ((id, r) in b.tracks) {
+            val found = byPath[r.path] ?: byTags[key(r.title, r.artist, r.album)]
+            if (found != null) map[id] = found.id
+        }
+        if (map.all { (k, v) -> k == v }) return b
+        fun m(id: Long) = map[id] ?: id
+        fun <V> keys(x: Map<Long, V>): Map<Long, V> = x.entries.associate { (k, v) -> m(k) to v }
+        val u = b.user
+        return b.copy(
+            user = u.copy(
+                favorites = u.favorites.map(::m).toSet(),
+                ratings = keys(u.ratings), plays = keys(u.plays), firstPlayed = keys(u.firstPlayed), lastPlayed = keys(u.lastPlayed),
+                history = u.history.map(::m).distinct(),
+                playlists = u.playlists.map { p -> p.copy(ids = p.ids.map(::m).distinct()) },
+                overrides = keys(u.overrides),
+            ),
+            queues = b.queues.map { q -> q.copy(ids = q.ids.map(::m)) },
+            positions = keys(b.positions),
+        )
+    }
+
+    private fun applyBackup(b: com.strata.player.data.Backup) {
+        updateUser { b.user }
+        // Settings are applied through the usual path, so the sound, order and library options take effect.
+        updateSettings { b.settings }
+        // What's playing now stays as it is; the restored queues are there to switch to.
+        commitQueues(b.queues, null)
+        engine.installPositions(b.positions)
+        store.savePositions(b.positions)
+        rebuildIndex()
+    }
+
     // ---------------------------------------------------------------- home-screen widgets
+
+    /** Told whenever the playing track or its heart changes; the playback service keeps the notification's heart in sync. */
+    var onNowPlayingChanged: ((trackId: Long, favorite: Boolean) -> Unit)? = null
 
     /** Mirrors the playing track into the widgets (they also work while the app process is cold). */
     fun publishWidget() {
         val cur = track(engine.currentId)
+        onNowPlayingChanged?.invoke(cur?.id ?: -1L, cur != null && isFav(cur.id))
         com.strata.player.widget.StrataWidgets.publish(
             app,
             if (cur == null) null else com.strata.player.widget.WidgetState(
                 trackId = cur.id, title = cur.title, artist = cur.artist, album = cur.album, albumId = cur.albumId,
                 uri = cur.uri.toString(), playing = engine.playIntent, favorite = isFav(cur.id),
+                positionMs = engine.player.currentPosition.coerceAtLeast(0L), durationMs = cur.durationMs,
+                atElapsed = android.os.SystemClock.elapsedRealtime(), normalSpeed = settings.speed == 1f,
+                fromTile = com.strata.player.widget.StrataWidgets.TILES.firstOrNull { tileContext(it.key) == engine.ctxName }?.key,
             ),
         )
     }
+
+    /** The playback context name a "Play from" tile starts. */
+    fun tileContext(key: String): String = if (key == "shuffle") "All tracks" else playlistName(key)
 
     /**
      * Called by the playback service for widget buttons that start playback ("play", "Play from" tiles).
@@ -685,7 +881,8 @@ class AppModel(private val app: Application) {
             onPermission(true)
         }
         var waited = 0
-        while ((loading || index.tracks.isEmpty()) && waited < 4000) { delay(50); waited += 50 }
+        // The snapshot from the last scan usually fills the index long before the fresh scan is done.
+        while (index.tracks.isEmpty() && loading && waited < 4000) { delay(50); waited += 50 }
         return index.tracks.isNotEmpty()
     }
 
@@ -849,9 +1046,7 @@ class AppModel(private val app: Application) {
 
     fun removeSelectedFromPlaylist() {
         val pid = selectionPlaylist ?: return
-        val n = selected.size
-        removeFromPlaylist(pid, selected)
-        flash("Removed ${com.strata.player.ui.Fmt.plural(n, "track")}")
+        removeFromPlaylistWithUndo(pid, selected)
         clearSelection()
     }
 

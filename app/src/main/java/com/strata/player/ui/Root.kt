@@ -1,7 +1,17 @@
 package com.strata.player.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.SizeTransform
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.using
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -21,6 +31,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,6 +40,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -44,6 +56,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.semantics.Role
@@ -81,19 +96,35 @@ fun StrataRoot(model: AppModel, onRequestPermission: () -> Unit) {
             } else {
                 Column(Modifier.fillMaxSize()) {
                     Box(Modifier.weight(1f).fillMaxWidth().statusBarsPadding()) {
-                        when (model.tab) {
-                            Tab.LIBRARY -> LibraryScreen(model)
-                            Tab.PLAYLISTS -> PlaylistsScreen(model)
-                            Tab.SEARCH -> SearchScreen(model)
-                            Tab.SOUND -> SoundScreen(model)
+                        Crossfade(model.tab, animationSpec = tween(180), label = "tab") { tab ->
+                            when (tab) {
+                                Tab.LIBRARY -> LibraryScreen(model)
+                                Tab.PLAYLISTS -> PlaylistsScreen(model)
+                                Tab.SEARCH -> SearchScreen(model)
+                                Tab.SOUND -> SoundScreen(model)
+                            }
                         }
                         DetailOverlay(model)
                     }
-                    if (model.selecting) {
-                        SelectionBar(model)
-                    } else {
-                        if (cur != null) MiniPlayer(model)
-                        BottomNav(model)
+                    // The selection bar slides up over the mini player and tab bar, and back down when done.
+                    AnimatedContent(
+                        model.selecting,
+                        transitionSpec = {
+                            (slideInVertically(tween(240)) { it / 2 } + fadeIn(tween(200))) togetherWith fadeOut(tween(120)) using
+                                SizeTransform(clip = false)
+                        },
+                        label = "bottom",
+                    ) { selecting ->
+                        if (selecting) {
+                            SelectionBar(model)
+                        } else {
+                            Column {
+                                AnimatedVisibility(cur != null, enter = expandVertically(tween(260)) + fadeIn(tween(260)), exit = shrinkVertically(tween(200)) + fadeOut(tween(160))) {
+                                    MiniPlayer(model)
+                                }
+                                BottomNav(model)
+                            }
+                        }
                     }
                 }
             }
@@ -168,57 +199,54 @@ private fun Onboarding(onRequest: () -> Unit) {
 private fun MiniPlayer(model: AppModel) {
     val t = LocalTokens.current
     val e = model.engine
-    val cur = model.track(e.currentId) ?: return
+    // Kept while the player hides, so the exit animation still has something to show.
+    var last by remember { mutableStateOf(model.track(e.currentId)) }
+    model.track(e.currentId)?.let { last = it }
+    val cur = last ?: return
+    val view = androidx.compose.ui.platform.LocalView.current
     var pos by remember { mutableLongStateOf(0L) }
-    LaunchedEffect(e.currentId, e.isPlaying) {
+    LaunchedEffect(e.currentId, e.isPlaying, model.uiVisible) {
         while (true) {
             pos = e.player.currentPosition
-            if (!e.isPlaying) break
+            if (!e.isPlaying || !model.uiVisible) break
             delay(500)
         }
     }
     val prog = if (cur.durationMs > 0) (pos.toFloat() / cur.durationMs).coerceIn(0f, 1f) else 0f
-    // Swipe left/right to skip, swipe up to open the player.
-    var dragX by remember { mutableStateOf(0f) }
-    var dragY by remember { mutableStateOf(0f) }
-    val density = androidx.compose.ui.platform.LocalDensity.current
-    val skipPx = with(density) { 56.dp.toPx() }
-    val upPx = with(density) { 40.dp.toPx() }
+    // Swipe left/right to skip (the next track slides in), swipe up to open the player.
+    val swipe = rememberTrackSwipe()
     Box(Modifier.fillMaxWidth().testTag("miniplayer").background(t.bg).padding(start = 10.dp, end = 10.dp, top = 6.dp)) {
         Box(
             Modifier
                 .fillMaxWidth()
-                .pointerInput(Unit) {
-                    detectDragGestures(
-                        onDragEnd = {
-                            when {
-                                kotlin.math.abs(dragX) > skipPx && kotlin.math.abs(dragX) > kotlin.math.abs(dragY) -> if (dragX < 0) e.next() else e.previous()
-                                -dragY > upPx && kotlin.math.abs(dragY) > kotlin.math.abs(dragX) -> model.nowOpen = true
-                            }
-                            dragX = 0f; dragY = 0f
-                        },
-                        onDragCancel = { dragX = 0f; dragY = 0f },
-                    ) { change, d -> change.consume(); dragX += d.x; dragY += d.y }
-                }
-                .offset { androidx.compose.ui.unit.IntOffset((dragX * 0.35f).toInt(), 0) }
+                .trackSwipe(swipe, e, skip = 56.dp, up = 40.dp, gap = 16.dp, onUp = { model.nowOpen = true }, onSkip = { haptic(view) })
+                .graphicsLayer { translationY = (swipe.dy.coerceAtMost(0f) * 0.2f).coerceAtLeast(-24.dp.toPx()) }
                 .height(62.dp)
                 .shadow(10.dp, RoundedCornerShape(18.dp), clip = false, ambientColor = Color.Black.copy(alpha = 0.3f), spotColor = Color.Black.copy(alpha = 0.3f))
                 .clip(RoundedCornerShape(18.dp))
                 .background(t.surface),
         ) {
             Row(Modifier.fillMaxSize().padding(start = 8.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                Row(
-                    Modifier.weight(1f).fillMaxSize().clickable(onClickLabel = "Open now playing") { model.nowOpen = true },
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Art(cur, Modifier.size(44.dp), RoundedCornerShape(10.dp))
-                    Spacer(Modifier.width(12.dp))
-                    Column(Modifier.weight(1f)) {
-                        Text(cur.title, style = Type.body(14, FontWeight.SemiBold), color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text(cur.artist, style = Type.body(12), color = t.sub, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                TrackStrip(
+                    swipe, model, cur, gap = 16.dp, clip = true,
+                    modifier = Modifier.weight(1f).fillMaxHeight().clickable(onClickLabel = "Open now playing") { model.nowOpen = true },
+                ) { tr ->
+                    Row(Modifier.fillMaxSize(), verticalAlignment = Alignment.CenterVertically) {
+                        Art(tr, Modifier.size(44.dp), RoundedCornerShape(10.dp))
+                        Spacer(Modifier.width(12.dp))
+                        Column(Modifier.weight(1f)) {
+                            Text(tr.title, style = Type.body(14, FontWeight.SemiBold), color = t.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(tr.artist, style = Type.body(12), color = t.sub, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
                     }
                 }
-                IconBtn(if (e.playIntent) Ic.pause else Ic.play, if (e.playIntent) "Pause" else "Play", e::togglePlay, iconSize = 24.dp)
+                val playDesc = if (e.playIntent) "Pause" else "Play"
+                Box(
+                    Modifier.pressScale().size(44.dp).clip(CircleShape)
+                        .clickable(role = Role.Button, onClickLabel = playDesc, onClick = e::togglePlay)
+                        .semantics { contentDescription = playDesc },
+                    contentAlignment = Alignment.Center,
+                ) { PlayPauseIcon(e.playIntent, t.text, 24.dp) }
                 IconBtn(Ic.next, "Next track", e::next)
             }
             Box(
@@ -245,12 +273,14 @@ private fun BottomNav(model: AppModel) {
 private fun androidx.compose.foundation.layout.RowScope.NavItem(icon: ImageVector, label: String, on: Boolean, onClick: () -> Unit) {
     val t = LocalTokens.current
     val bg by animateColorAsState(if (on) t.soft else Color.Transparent, label = "nav")
+    // The pill grows out from the icon when a tab is picked.
+    val pillW by animateDpAsState(if (on) 56.dp else 32.dp, spring(dampingRatio = 0.6f, stiffness = Spring.StiffnessMediumLow), label = "navPill")
     Column(
-        Modifier.weight(1f).fillMaxSize().testTag("nav-" + label.lowercase()).clickable(role = Role.Tab, onClick = onClick),
+        Modifier.weight(1f).fillMaxSize().testTag("nav-" + label.lowercase()).clickable(role = Role.Tab, onClick = onClick).pressScale(0.94f),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        Box(Modifier.size(width = 56.dp, height = 30.dp).clip(RoundedCornerShape(15.dp)).background(bg), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(width = pillW, height = 30.dp).clip(RoundedCornerShape(15.dp)).background(bg), contentAlignment = Alignment.Center) {
             Icon(icon, null, tint = if (on) t.text else t.sub, modifier = Modifier.size(22.dp))
         }
         Spacer(Modifier.height(4.dp))

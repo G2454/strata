@@ -12,6 +12,7 @@ import java.nio.ByteOrder
 class StrataAudioProcessor(val core: DspCore) : BaseAudioProcessor() {
 
     private var scratch = FloatArray(0)
+    private var shorts = ShortArray(0)
     private var encoding = C.ENCODING_PCM_16BIT
     private var channels = 2
 
@@ -34,25 +35,30 @@ class StrataAudioProcessor(val core: DspCore) : BaseAudioProcessor() {
         val frames = samples / channels
         if (scratch.size < samples) scratch = FloatArray(samples)
         val s = scratch
+        // Bulk copies through typed views instead of one getShort()/putShort() call per sample.
         if (encoding == C.ENCODING_PCM_FLOAT) {
-            for (i in 0 until samples) s[i] = input.getFloat()
+            input.asFloatBuffer().get(s, 0, samples)
         } else {
-            for (i in 0 until samples) s[i] = input.getShort() / 32768f
+            if (shorts.size < samples) shorts = ShortArray(samples)
+            val sh = shorts
+            input.asShortBuffer().get(sh, 0, samples)
+            for (i in 0 until samples) s[i] = sh[i] / 32768f
         }
-        // Consume any trailing partial sample bytes.
+        // Consume everything, including any trailing partial sample bytes.
         input.position(input.limit())
 
         core.process(s, frames)
 
-        val out = replaceOutputBuffer(samples * bytesPerSample)
+        val outBytes = samples * bytesPerSample
+        val out = replaceOutputBuffer(outBytes).order(ByteOrder.nativeOrder())
         if (encoding == C.ENCODING_PCM_FLOAT) {
-            for (i in 0 until samples) out.putFloat(s[i])
+            out.asFloatBuffer().put(s, 0, samples)
         } else {
-            for (i in 0 until samples) {
-                val v = (s[i] * 32767f).toInt()
-                out.putShort(v.coerceIn(-32768, 32767).toShort())
-            }
+            val sh = shorts
+            for (i in 0 until samples) sh[i] = (s[i] * 32767f).toInt().coerceIn(-32768, 32767).toShort()
+            out.asShortBuffer().put(sh, 0, samples)
         }
+        out.position(outBytes)
         out.flip()
     }
 
@@ -62,5 +68,6 @@ class StrataAudioProcessor(val core: DspCore) : BaseAudioProcessor() {
 
     override fun onReset() {
         scratch = FloatArray(0)
+        shorts = ShortArray(0)
     }
 }

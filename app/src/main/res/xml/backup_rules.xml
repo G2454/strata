@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 and older: Android's own backup keeps only your data, not caches (covers, waveforms, scans). -->
+<full-backup-content>
+    <include domain="file" path="strata/user.json" />
+    <include domain="file" path="strata/settings.json" />
+    <include domain="file" path="strata/queues.json" />
+    <include domain="file" path="strata/positions.json" />
+    <include domain="file" path="strata/session.json" />
+    <include domain="file" path="strata/now.json" />
+</full-backup-content>
