@@ -156,6 +156,12 @@ fun SearchScreen(model: AppModel) {
     val idx = model.index
     val results = rememberSearch(model, q)
     val ids = remember(results) { results.map { it.id } }
+    // Worked out once per result set, not on every redraw (a broad query can match thousands of tracks).
+    val artists = remember(results, idx) { results.flatMap { idx.artistsOf(it) }.distinct() }
+    val albums = remember(results) { results.map { it.albumId }.distinct() }
+    val artistSamples = remember(results, artists) {
+        artists.take(12).associateWith { a -> results.first { a in idx.artistsOf(it) } }
+    }
     val focus = LocalFocusManager.current
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
         item { Column {
@@ -216,12 +222,6 @@ fun SearchScreen(model: AppModel) {
                 }
             } }
         } else {
-            // Worked out once per result set, not on every redraw (a broad query can match thousands of tracks).
-            val artists = remember(results, idx) { results.flatMap { idx.artistsOf(it) }.distinct() }
-            val albums = remember(results) { results.map { it.albumId }.distinct() }
-            val artistSamples = remember(results, artists) {
-                artists.take(12).associateWith { a -> results.first { a in idx.artistsOf(it) } }
-            }
             item { Column {
                 Text(
                     "${Fmt.plural(results.size, "track")} · ${Fmt.plural(artists.size, "artist")} · ${Fmt.plural(albums.size, "album")}",
