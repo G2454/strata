@@ -59,8 +59,8 @@ The APK lands in `app/build/outputs/apk/release/`. Every build runs the unit and
 
 **Signing.** Builds are signed with one permanent key kept in two repository secrets,
 `STRATA_KEYSTORE_B64` (the keystore, base64) and `STRATA_KEYSTORE_PASSWORD`, so each new APK installs over the
-previous one and keeps your data. Without the secrets (a fork, a local build) the build falls back to a throwaway
-debug key and the log warns that the APK won't install over an existing one. Settings → About shows the build number.
+previous one and keeps your data. Without the secrets (a fork, a local build) it uses a throwaway debug key, and that
+APK won't install over one signed with the permanent key. Settings → About shows the build number.
 
 ## What's inside
 

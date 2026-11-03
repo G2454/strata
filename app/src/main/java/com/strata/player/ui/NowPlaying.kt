@@ -281,7 +281,7 @@ private fun CoverWithGestures(model: AppModel, cur: Track) {
     Box(contentAlignment = Alignment.Center) {
         TrackStrip(
             swipe, model, cur, gap = 24.dp,
-            modifier = Modifier.widthIn(max = 340.dp).fillMaxHeight().aspectRatio(1f, matchHeightConstraintsFirst = true)
+            modifier = Modifier.fitSquare(340.dp)
                 .testTag("np-art")
                 .semantics { contentDescription = "Cover. Swipe to skip, swipe up for the queue, double-tap to jump 30 seconds" }
                 .pointerInput(cur.id) {

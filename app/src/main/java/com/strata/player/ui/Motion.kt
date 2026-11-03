@@ -48,10 +48,12 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.strata.player.AppModel
@@ -187,6 +189,16 @@ fun AnimatedStars(rating: Int, onRate: (Int) -> Unit) {
             )
         }
     }
+}
+
+/**
+ * The biggest square that fits the space (at most [max]). Unlike aspectRatio, it never comes out larger than
+ * the space it's given on very tall or very wide screens, so the cover and its touch area always match.
+ */
+fun Modifier.fitSquare(max: Dp): Modifier = layout { measurable, constraints ->
+    val side = minOf(constraints.maxWidth, constraints.maxHeight, max.roundToPx()).coerceAtLeast(0)
+    val placeable = measurable.measure(Constraints.fixed(side, side))
+    layout(side, side) { placeable.place(0, 0) }
 }
 
 // ------------------------------------------------------------------ swiping between tracks

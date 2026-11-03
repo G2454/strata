@@ -18,27 +18,19 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      # The permanent signing key, from the repository secrets STRATA_KEYSTORE_B64 and STRATA_KEYSTORE_PASSWORD.
-      # Without it the build still works, but signs with a throwaway key: Android then won't install it over
-      # the previous build, and uninstalling first deletes playlists and play counts.
-      - name: Signing key
+      # Signs with the permanent key when the STRATA_KEYSTORE_B64 / STRATA_KEYSTORE_PASSWORD secrets exist
+      # (so a new APK installs over the old one); otherwise with the debug key.
+      - name: Build release and debug APKs
         env:
           KEYSTORE_B64: ${{ secrets.STRATA_KEYSTORE_B64 }}
+          STRATA_KEYSTORE_PASSWORD: ${{ secrets.STRATA_KEYSTORE_PASSWORD }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/strata.jks"
-            echo "STRATA_KEYSTORE_FILE=$RUNNER_TEMP/strata.jks" >> "$GITHUB_ENV"
-            echo "::notice::Signing with the permanent Strata key"
-          else
-            echo "::warning::No STRATA_KEYSTORE_B64 secret, signing with a throwaway key. This APK will not install over the previous one."
+            export STRATA_KEYSTORE_FILE="$RUNNER_TEMP/strata.jks"
           fi
-
-      - name: Build release and debug APKs
-        env:
-          STRATA_KEYSTORE_PASSWORD: ${{ secrets.STRATA_KEYSTORE_PASSWORD }}
-        run: |
-              chmod +x gradlew
-               ./gradlew --no-daemon --stacktrace assembleRelease assembleDebug
+          chmod +x gradlew
+          ./gradlew --no-daemon --stacktrace assembleRelease assembleDebug
 
       - name: Collect APKs
         run: |
