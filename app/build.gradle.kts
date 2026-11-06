@@ -17,7 +17,7 @@ android {
         // Every GitHub build gets a higher number, so Android sees it as an update (and Settings shows which build it is).
         val build = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
         versionCode = build ?: 1
-        versionName = if (build != null) "0.1.0 (build $build)" else "0.1.0 (local)"
+        versionName = if (build != null) "2.0.0 (build $build)" else "2.0.0 (local)"
     }
 
     // One permanent signing key, kept as GitHub secrets (see .github/workflows/build.yml). Without it Android
